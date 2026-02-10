@@ -15,8 +15,8 @@ logging:
   json: true
 
 storage:
+  # Database stores only metadata - NO cookie values
   database_path: data/cookie_guardian.sqlite
-  encryption_key_env: COOKIE_GUARDIAN_KEY
 
 glm:
   api_url: https://open.bigmodel.cn/api/paas/v4/chat/completions
@@ -27,3 +27,9 @@ glm:
 warp:
   connect_timeout_sec: 30
   rotate_interval_sec: 900
+
+credentials:
+  # Environment variable prefix for platform credentials
+  # Set USER_CREDENTIALS_{PLATFORM} with JSON: {"username": "...", "password": "..."}
+  # Example: USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'
+  prefix: USER_CREDENTIALS
