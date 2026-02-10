@@ -1,0 +1,29 @@
+app:
+  name: cookie-guardian
+  max_concurrency: 3
+  shard_id: 0
+  shard_total: 3
+
+github:
+  api_url: https://api.github.com
+  graphql_url: https://api.github.com/graphql
+  org: example-org
+  token_env: GITHUB_TOKEN
+
+logging:
+  level: INFO
+  json: true
+
+storage:
+  database_path: data/cookie_guardian.sqlite
+  encryption_key_env: COOKIE_GUARDIAN_KEY
+
+glm:
+  api_url: https://open.bigmodel.cn/api/paas/v4/chat/completions
+  api_key_env: GLM_API_KEY
+  model: glm-4-air
+  monthly_budget_usd: 0.20
+
+warp:
+  connect_timeout_sec: 30
+  rotate_interval_sec: 900

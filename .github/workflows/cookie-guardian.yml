@@ -1,0 +1,30 @@
+name: Cookie Guardian
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  guardian:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Initialize database
+        run: python scripts/init_db.py
+      - name: Run orchestrator
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          COOKIE_GUARDIAN_KEY: ${{ secrets.COOKIE_GUARDIAN_KEY }}
+        run: python -m src.orchestrator
