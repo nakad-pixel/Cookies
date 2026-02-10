@@ -32,8 +32,8 @@ class LoggingConfig:
 
 @dataclass(frozen=True)
 class StorageConfig:
+    """Storage configuration - NO encryption keys, metadata only."""
     database_path: str
-    encryption_key_env: str
 
 
 @dataclass(frozen=True)
@@ -51,6 +51,16 @@ class WarpConfig:
 
 
 @dataclass(frozen=True)
+class CredentialsConfig:
+    """Configuration for credential environment variable names.
+
+    USER_CREDENTIALS_{PLATFORM} should contain JSON with username and password.
+    Example: USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'
+    """
+    prefix: str = "USER_CREDENTIALS"
+
+
+@dataclass(frozen=True)
 class Config:
     app: AppConfig
     github: GitHubConfig
@@ -58,6 +68,7 @@ class Config:
     storage: StorageConfig
     glm: GlmConfig
     warp: WarpConfig
+    credentials: CredentialsConfig
 
 
 DEFAULT_CONFIG_PATH = Path("/home/engine/project/config.yaml")
@@ -78,6 +89,7 @@ def load_config(path: Path | None = None) -> Config:
     storage = raw.get("storage", {})
     glm = raw.get("glm", {})
     warp = raw.get("warp", {})
+    credentials = raw.get("credentials", {})
 
     return Config(
         app=AppConfig(
@@ -98,10 +110,9 @@ def load_config(path: Path | None = None) -> Config:
         ),
         storage=StorageConfig(
             database_path=storage.get("database_path", "data/cookie_guardian.sqlite"),
-            encryption_key_env=storage.get("encryption_key_env", "COOKIE_GUARDIAN_KEY"),
         ),
         glm=GlmConfig(
-            api_url=glm.get("api_url", "https://open.bigmodel.cn"),
+            api_url=glm.get("api_url", "https://open.bigmodel.cn/api/paas/v4/chat/completions"),
             api_key_env=glm.get("api_key_env", "GLM_API_KEY"),
             model=glm.get("model", "glm-4-air"),
             monthly_budget_usd=float(glm.get("monthly_budget_usd", 0.2)),
@@ -110,9 +121,45 @@ def load_config(path: Path | None = None) -> Config:
             connect_timeout_sec=int(warp.get("connect_timeout_sec", 30)),
             rotate_interval_sec=int(warp.get("rotate_interval_sec", 900)),
         ),
+        credentials=CredentialsConfig(
+            prefix=credentials.get("prefix", "USER_CREDENTIALS"),
+        ),
     )
 
 
 def get_env_value(env_key: str, default: str | None = None) -> str | None:
+    """Get a value from environment variables."""
     value = os.getenv(env_key, default)
     return value if value not in ("", None) else default
+
+
+def get_credentials_for_platform(platform: str, config: Config | None = None) -> Dict[str, str] | None:
+    """Get credentials for a platform from environment variables.
+
+    Looks for USER_CREDENTIALS_{PLATFORM} environment variable containing JSON.
+
+    Args:
+        platform: The platform name (e.g., "github", "gitlab")
+        config: Optional config object
+
+    Returns:
+        Dict with 'username' and 'password' or None if not found
+    """
+    if config is None:
+        config = load_config()
+
+    env_var = f"{config.credentials.prefix}_{platform.upper()}"
+    credentials_json = get_env_value(env_var)
+
+    if not credentials_json:
+        return None
+
+    try:
+        import json
+        creds = json.loads(credentials_json)
+        return {
+            "username": creds.get("username", ""),
+            "password": creds.get("password", ""),
+        }
+    except json.JSONDecodeError:
+        return None

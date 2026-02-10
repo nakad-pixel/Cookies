@@ -13,16 +13,58 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install WARP
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update
+          sudo apt-get install -y cloudflare-warp
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          playwright install chromium
+
+      - name: Initialize database
+        run: python scripts/init_db.py
+
+      - name: Connect WARP
+        run: |
+          warp-cli register
+          warp-cli connect
+          sleep 5
+          warp-cli status
+
       - name: Run orchestrator
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
-          COOKIE_GUARDIAN_KEY: ${{ secrets.COOKIE_GUARDIAN_KEY }}
-        run: python -m src.orchestrator
+          # Optional: platform credentials for authenticated extraction
+          USER_CREDENTIALS_GITHUB: ${{ secrets.USER_CREDENTIALS_GITHUB }}
+        run: python -m src.orchestrator 2>&1 | tee logs/run.log
+
+      - name: Disconnect WARP
+        if: always()
+        run: warp-cli disconnect || true
+
+      - name: Redact logs before upload
+        if: always()
+        run: |
+          # Redact any potentially sensitive data from logs
+          sed -i 's/"value":"[^"]*"/"value":"[REDACTED]"/g' logs/run.log || true
+          sed -i 's/Cookie: [^[:space:]]*/Cookie: [REDACTED]/g' logs/run.log || true
+          sed -i 's/Authorization: Bearer [^[:space:]]*/Authorization: Bearer [REDACTED]/g' logs/run.log || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cookie-guardian-logs-manual
+          path: logs/run.log
+          retention-days: 7
