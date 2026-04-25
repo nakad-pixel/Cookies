@@ -5,7 +5,7 @@ These tests verify the full workflow without external dependencies.
 
 import asyncio
 import json
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, AsyncMock
 
 from src.browser_automation import CookieData, ExtractionResult
 from src.cleanup import SecureWiper, redact_sensitive
@@ -28,7 +28,7 @@ class DummyGlm:
     def __init__(self, decision=None):
         self._decision = decision or GlmDecision(action="extract", reason="test")
 
-    def decide(self, prompt: str) -> GlmDecision:
+    def should_extract_cookies(self, repo_name: str, repo_description=None):
         return self._decision
 
 
@@ -59,6 +59,17 @@ def test_full_workflow_no_2fa(tmp_path):
     config.glm.monthly_budget_usd = 0.1
     config.credentials = Mock()
     config.credentials.prefix = "USER_CREDENTIALS"
+    config.app = Mock()
+    config.app.max_concurrency = 2
+    config.app.max_retries = 3
+    config.app.profile_dir = "data/profiles"
+    config.app.har_dir = "data/har"
+    config.app.tracing_dir = "data/traces"
+    config.app.enable_har = False
+    config.app.enable_tracing = False
+    config.warp = Mock()
+    config.warp.connect_timeout_sec = 30
+    config.warp.rotate_interval_sec = 900
 
     # Create test candidate
     candidate = RepoCandidate(
@@ -84,13 +95,15 @@ def test_full_workflow_no_2fa(tmp_path):
         CookieData(name="session", value="secret123", domain=".github.com"),
     ]
 
-    with patch.object(orchestrator, "_extract_cookies") as mock_extract:
-        mock_extract.return_value = ExtractionResult(
+    async def mock_extract(candidate):
+        return ExtractionResult(
             cookies=test_cookies,
             has_2fa=False,
             success=True,
         )
-        asyncio.run(orchestrator.run())
+
+    orchestrator._extract_cookies = mock_extract
+    asyncio.run(orchestrator.run())
 
     # Verify final state
     assert db.get_state() == "IDLE"
@@ -115,6 +128,17 @@ def test_full_workflow_with_2fa(tmp_path):
     config.glm.monthly_budget_usd = 0.1
     config.credentials = Mock()
     config.credentials.prefix = "USER_CREDENTIALS"
+    config.app = Mock()
+    config.app.max_concurrency = 2
+    config.app.max_retries = 3
+    config.app.profile_dir = "data/profiles"
+    config.app.har_dir = "data/har"
+    config.app.tracing_dir = "data/traces"
+    config.app.enable_har = False
+    config.app.enable_tracing = False
+    config.warp = Mock()
+    config.warp.connect_timeout_sec = 30
+    config.warp.rotate_interval_sec = 900
 
     # Create test candidate
     candidate = RepoCandidate(
@@ -136,13 +160,15 @@ def test_full_workflow_with_2fa(tmp_path):
     orchestrator = Orchestrator(context)
 
     # Mock the extraction to indicate 2FA detected
-    with patch.object(orchestrator, "_extract_cookies") as mock_extract:
-        mock_extract.return_value = ExtractionResult(
+    async def mock_extract(candidate):
+        return ExtractionResult(
             cookies=[],
             has_2fa=True,
             success=False,
         )
-        asyncio.run(orchestrator.run())
+
+    orchestrator._extract_cookies = mock_extract
+    asyncio.run(orchestrator.run())
 
     # Verify final state and that no injection happened
     assert db.get_state() == "IDLE"
@@ -160,6 +186,17 @@ def test_cookie_wiping_after_injection(tmp_path):
     config.github.api_url = "https://api.github.com"
     config.credentials = Mock()
     config.credentials.prefix = "USER_CREDENTIALS"
+    config.app = Mock()
+    config.app.max_concurrency = 2
+    config.app.max_retries = 3
+    config.app.profile_dir = "data/profiles"
+    config.app.har_dir = "data/har"
+    config.app.tracing_dir = "data/traces"
+    config.app.enable_har = False
+    config.app.enable_tracing = False
+    config.warp = Mock()
+    config.warp.connect_timeout_sec = 30
+    config.warp.rotate_interval_sec = 900
 
     # Create test candidate
     candidate = RepoCandidate(

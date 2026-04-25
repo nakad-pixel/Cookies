@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
-from typing import Any, Dict
-
-import httpx
+from typing import Dict
 
 
 @dataclass
@@ -15,15 +12,23 @@ class GlmDecision:
 
 
 class GlmEngine:
-    """Simplified GLM-4-Air decision engine for repository analysis.
+    """Zero-cost rule-based decision engine replacing the paid GLM API.
 
-    This engine provides AI-powered decisions but uses fail-fast behavior:
-    - If API fails, returns a fallback decision
-    - No complex retry logic
-    - Results are cached to minimize API calls
+    Uses keyword matching against repository metadata to decide whether
+    cookie extraction is likely needed. No external API calls are made.
     """
 
-    def __init__(self, api_url: str, api_key: str | None, model: str, monthly_budget_usd: float) -> None:
+    PLATFORM_KEYWORDS = [
+        "github", "gitlab", "aws", "azure", "google", "gcp",
+    ]
+
+    AUTH_KEYWORDS = [
+        "api", "scrap", "auth", "login", "session",
+        "cookie", "token", "bot", "automation",
+    ]
+
+    def __init__(self, api_url: str = "", api_key: str | None = None, model: str = "", monthly_budget_usd: float = 0.0) -> None:
+        # Keep signature for backward compatibility but ignore paid API params
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
@@ -31,102 +36,57 @@ class GlmEngine:
         self.cache: Dict[str, GlmDecision] = {}
 
     def decide(self, prompt: str) -> GlmDecision:
-        """Make a decision based on the prompt.
-
-        Uses caching to minimize API calls. Falls back to rule-based
-        decision if API key is missing or call fails.
+        """Make a rule-based decision from a free-form prompt.
 
         Args:
-            prompt: The decision prompt
+            prompt: The decision prompt (usually contains repo name/URL).
 
         Returns:
-            GlmDecision with action and reason
+            GlmDecision with action and reason.
         """
         cache_key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-
-        # Check cache first
         if cache_key in self.cache:
             return self.cache[cache_key]
 
-        # If no API key, use fallback
-        if not self.api_key:
-            decision = GlmDecision(action="fallback", reason="Missing API key, using rule-based decision")
-            self.cache[cache_key] = decision
-            return decision
-
-        # Try API call
-        try:
-            decision = self._call_api(prompt)
-            self.cache[cache_key] = decision
-            return decision
-        except Exception as e:
-            # Fail fast - return fallback on any error
-            decision = GlmDecision(action="fallback", reason=f"API call failed: {str(e)[:50]}")
-            self.cache[cache_key] = decision
-            return decision
-
-    def _call_api(self, prompt: str) -> GlmDecision:
-        """Call the GLM API.
-
-        Args:
-            prompt: The decision prompt
-
-        Returns:
-            Parsed GlmDecision
-
-        Raises:
-            httpx.HTTPError: On API failure
-            json.JSONDecodeError: On invalid response
-        """
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a cookie guardian decision engine. Respond with JSON containing 'action' and 'reason' fields."
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.2,
-        }
-
-        response = httpx.post(self.api_url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        parsed: Dict[str, Any] = json.loads(content)
-
-        return GlmDecision(
-            action=str(parsed.get("action", "unknown")),
-            reason=str(parsed.get("reason", ""))
-        )
+        decision = self._rule_based_decision(prompt)
+        self.cache[cache_key] = decision
+        return decision
 
     def should_extract_cookies(self, repo_name: str, repo_description: str | None = None) -> GlmDecision:
         """Determine if a repository likely needs cookie extraction.
 
         Args:
-            repo_name: Full repository name (owner/repo)
-            repo_description: Optional repository description
+            repo_name: Full repository name (owner/repo).
+            repo_description: Optional repository description.
 
         Returns:
-            GlmDecision with action "extract" or "skip"
+            GlmDecision with action "extract" or "skip".
         """
-        description = repo_description or "No description"
-        prompt = f"""Analyze repository: {repo_name}
-Description: {description}
+        text = f"{repo_name} {repo_description or ''}".lower()
+        return self._rule_based_decision(text)
 
-Does this repository likely require authentication cookies for external services?
-Consider: API integrations, data scraping, automated testing, etc.
+    def _rule_based_decision(self, text: str) -> GlmDecision:
+        text_lower = text.lower()
 
-Respond with JSON:
-{{
-    "action": "extract" or "skip",
-    "reason": "brief explanation"
-}}"""
-        return self.decide(prompt)
+        has_platform = any(kw in text_lower for kw in self.PLATFORM_KEYWORDS)
+        has_auth = any(kw in text_lower for kw in self.AUTH_KEYWORDS)
+
+        if has_platform and has_auth:
+            return GlmDecision(
+                action="extract",
+                reason="Repository metadata indicates platform + auth keywords",
+            )
+        if has_auth:
+            return GlmDecision(
+                action="extract",
+                reason="Auth-related keywords found in repository metadata",
+            )
+        if has_platform:
+            return GlmDecision(
+                action="extract",
+                reason="Platform keyword found; may require external auth",
+            )
+        return GlmDecision(
+            action="skip",
+            reason="No platform or auth indicators detected",
+        )

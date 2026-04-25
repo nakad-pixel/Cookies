@@ -1,16 +1,32 @@
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 
+from src.browser_context import BrowserContextManager
+from src.captcha_detector import CaptchaDetector, CaptchaResult
 from src.cleanup import SecureWiper
+from src.header_fingerprinter import HeaderFingerprinter
+from src.human_behavior import (
+    emulate_scroll,
+    human_like_click,
+    human_like_typing,
+    random_human_wait,
+)
 from src.logger import log_2fa_detected, setup_logger
+from src.platform_logins import get_platform_login
+from src.platform_logins.base import TwoFactorAuthError
+from src.stealth_config import STEALTH_INIT_SCRIPTS, STEALTH_LAUNCH_ARGS, get_fingerprint
 
 try:
-    from playwright.sync_api import sync_playwright, Page
+    from patchright.async_api import async_playwright, Browser, BrowserContext, Page
 except ImportError:  # pragma: no cover - optional dependency
-    sync_playwright = None
+    async_playwright = None
+    Browser = None
+    BrowserContext = None
     Page = None
 
 
@@ -34,6 +50,8 @@ class ExtractionResult:
     """Result of cookie extraction attempt."""
     cookies: List[CookieData] = field(default_factory=list)
     has_2fa: bool = False
+    has_captcha: bool = False
+    captcha_result: Optional[CaptchaResult] = None
     success: bool = False
     error_message: Optional[str] = None
 
@@ -44,13 +62,8 @@ class ExtractionResult:
         self.cookies = []
 
 
-class TwoFactorAuthError(Exception):
-    """Raised when 2FA is detected during login."""
-    pass
-
-
 class BrowserAutomation:
-    """Browser automation with 2FA detection and stealth features."""
+    """Async browser automation with anti-detection, human behavior, and CAPTCHA detection."""
 
     # 2FA detection patterns - look for these in page content
     TWO_FA_PATTERNS = [
@@ -84,132 +97,185 @@ class BrowserAutomation:
         '[data-testid*="2fa"]',
     ]
 
-    def __init__(self, headless: bool = True) -> None:
+    def __init__(
+        self,
+        headless: bool = True,
+        profile_dir: str = "data/profiles",
+        enable_har: bool = False,
+        har_dir: str = "data/har",
+        enable_tracing: bool = False,
+        tracing_dir: str = "data/traces",
+    ) -> None:
         self.headless = headless
         self.logger = setup_logger("browser-automation")
+        self.context_manager = BrowserContextManager(profile_dir)
+        self.enable_har = enable_har
+        self.har_dir = Path(har_dir)
+        self.enable_tracing = enable_tracing
+        self.tracing_dir = Path(tracing_dir)
+        self._browser: Optional[Browser] = None
+        self._playwright = None
 
-    def _check_for_2fa(self, page) -> bool:
-        """Check if the current page indicates 2FA is required.
+    async def _launch_browser(self, platform: str = "generic") -> Browser:
+        if async_playwright is None:
+            raise RuntimeError("patchright is not installed")
 
-        Args:
-            page: Playwright page object
+        if self._browser is not None:
+            return self._browser
 
-        Returns:
-            True if 2FA is detected
-        """
-        # Check page content for 2FA keywords
-        content = page.content().lower()
-        for pattern in self.TWO_FA_PATTERNS:
-            if pattern in content:
-                self.logger.debug(f"2FA pattern detected: {pattern}")
-                return True
+        self._playwright = await async_playwright().start()
+        profile_path = self.context_manager.ensure_profile(platform)
 
-        # Check for 2FA input fields
-        for selector in self.TWO_FA_SELECTORS:
+        args = list(STEALTH_LAUNCH_ARGS)
+        self._browser = await self._playwright.chromium.launch(
+            headless=self.headless,
+            args=args,
+        )
+        return self._browser
+
+    async def _new_context(self, platform: str = "generic") -> BrowserContext:
+        browser = await self._launch_browser(platform)
+        fingerprint = get_fingerprint(platform)
+        profile_path = self.context_manager.ensure_profile(platform)
+
+        har_path = None
+        if self.enable_har:
+            self.har_dir.mkdir(parents=True, exist_ok=True)
+            har_path = self.har_dir / f"{platform}_{random.randint(1000, 9999)}.har"
+
+        context = await browser.new_context(
+            viewport=fingerprint.viewport,
+            user_agent=fingerprint.user_agent,
+            locale=fingerprint.locale,
+            timezone_id=fingerprint.timezone,
+            color_scheme=fingerprint.color_scheme,
+            java_script_enabled=True,
+            bypass_csp=True,
+            storage_state=str(profile_path / "storage_state.json") if (profile_path / "storage_state.json").exists() else None,
+            record_har_path=str(har_path) if har_path else None,
+        )
+
+        await context.add_init_script(STEALTH_INIT_SCRIPTS)
+
+        if self.enable_tracing:
+            self.tracing_dir.mkdir(parents=True, exist_ok=True)
+            trace_path = self.tracing_dir / f"{platform}_{random.randint(1000, 9999)}.zip"
+            await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            context._cg_trace_path = str(trace_path)  # type: ignore[attr-defined]
+
+        return context
+
+    async def _close_context(self, context: BrowserContext) -> None:
+        if hasattr(context, "_cg_trace_path"):
             try:
-                if page.locator(selector).count() > 0:
-                    self.logger.debug(f"2FA selector found: {selector}")
-                    return True
+                await context.tracing.stop(path=context._cg_trace_path)  # type: ignore[attr-defined]
             except Exception:
-                continue
+                pass
+        try:
+            await context.close()
+        except Exception:
+            pass
 
-        # Check page title for 2FA indicators
-        title = page.title().lower()
-        title_indicators = ["two-factor", "2fa", "authentication", "verification", "security code"]
-        for indicator in title_indicators:
-            if indicator in title:
-                self.logger.debug(f"2FA indicator in title: {indicator}")
-                return True
-
-        return False
-
-    def extract_cookies(
+    async def extract_cookies(
         self,
         url: str,
         username: Optional[str] = None,
         password: Optional[str] = None,
-        platform: str = "unknown"
+        platform: str = "unknown",
     ) -> ExtractionResult:
-        """Extract cookies from a platform with 2FA detection.
+        """Extract cookies from a platform with 2FA and CAPTCHA detection.
 
         Args:
-            url: The URL to navigate to
-            username: Optional username for login
-            password: Optional password for login
-            platform: Platform name for logging
+            url: The URL to navigate to.
+            username: Optional username for login.
+            password: Optional password for login.
+            platform: Platform name for logging and profile selection.
 
         Returns:
-            ExtractionResult with cookies or 2FA detection status
+            ExtractionResult with cookies, 2FA/CAPTCHA detection status.
         """
-        if sync_playwright is None:
-            raise RuntimeError("Playwright is not installed")
+        if async_playwright is None:
+            raise RuntimeError("patchright is not installed")
 
         result = ExtractionResult()
+        context = None
 
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=self.headless)
-                context = browser.new_context(
-                    viewport={
-                        "width": random.choice([1280, 1366, 1440]),
-                        "height": random.choice([720, 768, 900])
-                    },
-                    timezone_id=random.choice(["UTC", "America/New_York", "Europe/London"]),
-                    user_agent=self._get_random_user_agent(),
-                )
+            context = await self._new_context(platform)
+            page = await context.new_page()
 
-                # Stealth: disable webdriver property
-                context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                """)
+            # Set extra headers for fingerprint randomization
+            fingerprinter = HeaderFingerprinter()
+            headers = fingerprinter.get_random_headers(platform)
+            await page.set_extra_http_headers(headers)
 
-                page = context.new_page()
-                page.goto(url, wait_until="networkidle")
+            await page.goto(url, wait_until="networkidle")
+            await random_human_wait(2.0, 4.0)
+            await emulate_scroll(page, max_scrolls=3)
 
-                # Check for 2FA immediately after page load
-                if self._check_for_2fa(page):
+            # CAPTCHA detection
+            captcha = await CaptchaDetector.detect_any(page)
+            if captcha.present:
+                result.has_captcha = True
+                result.captcha_result = captcha
+                self.logger.warning(f"CAPTCHA detected: {captcha.type} on {platform}")
+                await self._close_context(context)
+                return result
+
+            # 2FA detection
+            if await self._check_for_2fa(page):
+                result.has_2fa = True
+                log_2fa_detected(self.logger, platform)
+                await self._close_context(context)
+                return result
+
+            # Attempt login if credentials provided
+            if username and password:
+                try:
+                    login_handler = get_platform_login(platform)
+                    await login_handler.login(page, {"username": username, "password": password})
+                    await random_human_wait(2.0, 4.0)
+                except TwoFactorAuthError:
                     result.has_2fa = True
                     log_2fa_detected(self.logger, platform)
-                    browser.close()
+                    await self._close_context(context)
+                    return result
+                except Exception as login_exc:
+                    self.logger.warning(f"Platform login failed for {platform}: {login_exc}")
+                    # Fallback to generic login attempt
+                    await self._attempt_generic_login(page, username, password, platform)
+
+                # Re-check 2FA after login
+                if await self._check_for_2fa(page):
+                    result.has_2fa = True
+                    log_2fa_detected(self.logger, platform)
+                    await self._close_context(context)
                     return result
 
-                # If credentials provided, attempt login
-                if username and password:
-                    # This is a simplified login flow - platforms may vary
-                    # The actual implementation would need platform-specific selectors
-                    login_result = self._attempt_login(page, username, password, platform)
+            # Extract cookies
+            raw_cookies = await context.cookies()
+            result.cookies = [
+                CookieData(
+                    name=cookie["name"],
+                    value=cookie["value"],
+                    domain=cookie.get("domain", ""),
+                    expires=cookie.get("expires"),
+                    secure=cookie.get("secure", True),
+                    http_only=cookie.get("httpOnly", True),
+                )
+                for cookie in raw_cookies
+            ]
+            result.success = True
 
-                    if login_result.get("has_2fa", False):
-                        result.has_2fa = True
-                        log_2fa_detected(self.logger, platform)
-                        browser.close()
-                        return result
+            # Persist storage state for next run
+            profile_path = self.context_manager.ensure_profile(platform)
+            storage_state_path = profile_path / "storage_state.json"
+            try:
+                await context.storage_state(path=str(storage_state_path))
+            except Exception:
+                pass
 
-                    # Check again after login attempt
-                    if self._check_for_2fa(page):
-                        result.has_2fa = True
-                        log_2fa_detected(self.logger, platform)
-                        browser.close()
-                        return result
-
-                # Extract cookies
-                raw_cookies = context.cookies()
-                result.cookies = [
-                    CookieData(
-                        name=cookie["name"],
-                        value=cookie["value"],
-                        domain=cookie.get("domain", ""),
-                        expires=cookie.get("expires"),
-                        secure=cookie.get("secure", True),
-                        http_only=cookie.get("httpOnly", True),
-                    )
-                    for cookie in raw_cookies
-                ]
-                result.success = True
-
-                browser.close()
+            await self._close_context(context)
 
         except TwoFactorAuthError:
             result.has_2fa = True
@@ -217,135 +283,161 @@ class BrowserAutomation:
         except Exception as e:
             result.error_message = str(e)
             self.logger.error(f"Extraction failed: {e}")
+            if context:
+                await self._close_context(context)
 
         return result
 
-    def _attempt_login(
-        self,
-        page,
-        username: str,
-        password: str,
-        platform: str
-    ) -> Dict[str, bool]:
-        """Attempt to log in to the platform.
+    async def _check_for_2fa(self, page: Page) -> bool:
+        """Check if the current page indicates 2FA is required."""
+        try:
+            content = (await page.content()).lower()
+            for pattern in self.TWO_FA_PATTERNS:
+                if pattern in content:
+                    self.logger.debug(f"2FA pattern detected: {pattern}")
+                    return True
+        except Exception:
+            pass
 
-        This is a generic implementation. Production would need platform-specific selectors.
-
-        Returns:
-            Dict with 'success' and 'has_2fa' keys
-        """
-        result = {"success": False, "has_2fa": False}
+        for selector in self.TWO_FA_SELECTORS:
+            try:
+                count = await page.locator(selector).count()
+                if count > 0:
+                    self.logger.debug(f"2FA selector found: {selector}")
+                    return True
+            except Exception:
+                continue
 
         try:
-            # Common username field selectors
-            username_selectors = [
-                'input[name="username"]',
-                'input[name="login"]',
-                'input[name="email"]',
-                'input[type="email"]',
-                'input[id="username"]',
-                'input[id="login"]',
-            ]
+            title = (await page.title()).lower()
+            title_indicators = ["two-factor", "2fa", "authentication", "verification", "security code"]
+            for indicator in title_indicators:
+                if indicator in title:
+                    self.logger.debug(f"2FA indicator in title: {indicator}")
+                    return True
+        except Exception:
+            pass
 
-            # Common password field selectors
-            password_selectors = [
-                'input[name="password"]',
-                'input[type="password"]',
-                'input[id="password"]',
-            ]
+        return False
 
-            # Find and fill username
-            for selector in username_selectors:
-                try:
-                    if page.locator(selector).count() > 0:
-                        page.locator(selector).fill(username)
-                        break
-                except Exception:
-                    continue
+    async def _attempt_generic_login(
+        self,
+        page: Page,
+        username: str,
+        password: str,
+        platform: str,
+    ) -> Dict[str, bool]:
+        """Generic fallback login attempt using common selectors."""
+        result = {"success": False, "has_2fa": False}
 
-            # Find and fill password
-            for selector in password_selectors:
-                try:
-                    if page.locator(selector).count() > 0:
-                        page.locator(selector).fill(password)
-                        break
-                except Exception:
-                    continue
+        username_selectors = [
+            'input[name="username"]',
+            'input[name="login"]',
+            'input[name="email"]',
+            'input[type="email"]',
+            'input[id="username"]',
+            'input[id="login"]',
+        ]
+        password_selectors = [
+            'input[name="password"]',
+            'input[type="password"]',
+            'input[id="password"]',
+        ]
+        submit_selectors = [
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button:has-text("Sign in")',
+            'button:has-text("Log in")',
+            'button:has-text("Login")',
+        ]
 
-            # Click submit (common patterns)
-            submit_selectors = [
-                'button[type="submit"]',
-                'input[type="submit"]',
-                'button:has-text("Sign in")',
-                'button:has-text("Log in")',
-                'button:has-text("Login")',
-            ]
+        for selector in username_selectors:
+            try:
+                if await page.locator(selector).count() > 0:
+                    await human_like_typing(page, selector, username)
+                    break
+            except Exception:
+                continue
 
-            for selector in submit_selectors:
-                try:
-                    if page.locator(selector).count() > 0:
-                        page.locator(selector).click()
-                        page.wait_for_load_state("networkidle")
-                        break
-                except Exception:
-                    continue
+        await random_human_wait(0.5, 1.0)
 
-            # Check for 2FA after login attempt
-            if self._check_for_2fa(page):
-                result["has_2fa"] = True
-                return result
+        for selector in password_selectors:
+            try:
+                if await page.locator(selector).count() > 0:
+                    await human_like_typing(page, selector, password)
+                    break
+            except Exception:
+                continue
 
-            result["success"] = True
+        await random_human_wait(0.5, 1.0)
 
-        except Exception as e:
-            self.logger.error(f"Login attempt failed: {e}")
+        for selector in submit_selectors:
+            try:
+                if await page.locator(selector).count() > 0:
+                    await human_like_click(page, selector)
+                    await page.wait_for_load_state("networkidle")
+                    break
+            except Exception:
+                continue
 
+        if await self._check_for_2fa(page):
+            result["has_2fa"] = True
+            return result
+
+        result["success"] = True
         return result
 
-    def _get_random_user_agent(self) -> str:
-        """Get a random user agent to avoid detection."""
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        ]
-        return random.choice(user_agents)
-
-    def validate_cookies(self, url: str, cookies: List[CookieData]) -> bool:
+    async def validate_cookies(self, url: str, cookies: List[CookieData]) -> bool:
         """Validate that cookies work for accessing the given URL.
 
         Args:
-            url: URL to test
-            cookies: Cookies to use
+            url: URL to test.
+            cookies: Cookies to use.
 
         Returns:
-            True if cookies are valid
+            True if cookies are valid.
         """
-        if sync_playwright is None:
-            raise RuntimeError("Playwright is not installed")
+        if async_playwright is None:
+            raise RuntimeError("patchright is not installed")
 
+        context = None
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=self.headless)
-                context = browser.new_context()
-                context.add_cookies(
-                    [
-                        {
-                            "name": cookie.name,
-                            "value": cookie.value,
-                            "domain": cookie.domain,
-                            "path": "/",
-                            "secure": cookie.secure,
-                            "httpOnly": cookie.http_only,
-                            "expires": cookie.expires,
-                        }
-                        for cookie in cookies
-                    ]
-                )
-                page = context.new_page()
-                response = page.goto(url, wait_until="domcontentloaded")
-                browser.close()
-                return bool(response) and response.ok
+            context = await self._new_context()
+            await context.add_cookies(
+                [
+                    {
+                        "name": cookie.name,
+                        "value": cookie.value,
+                        "domain": cookie.domain,
+                        "path": "/",
+                        "secure": cookie.secure,
+                        "httpOnly": cookie.http_only,
+                        "expires": cookie.expires,
+                    }
+                    for cookie in cookies
+                ]
+            )
+            page = await context.new_page()
+            response = await page.goto(url, wait_until="domcontentloaded")
+            await self._close_context(context)
+            return bool(response) and response.ok
         except Exception as e:
             self.logger.error(f"Cookie validation failed: {e}")
+            if context:
+                await self._close_context(context)
             return False
+
+    async def close(self) -> None:
+        """Close the browser and stop playwright."""
+        if self._browser is not None:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None

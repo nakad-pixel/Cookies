@@ -25,11 +25,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cloudflare-warp
 
+      - name: Cache browser profiles
+        uses: actions/cache@v4
+        with:
+          path: data/profiles
+          key: cookie-guardian-profiles-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            cookie-guardian-profiles-${{ runner.os }}-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          playwright install chromium
+          patchright install chromium
+
+      - name: Create data directories
+        run: mkdir -p data/profiles data/har data/traces
 
       - name: Initialize database
         run: python scripts/init_db.py

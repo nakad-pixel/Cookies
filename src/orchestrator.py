@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
 
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
 from src.browser_automation import BrowserAutomation, CookieData, ExtractionResult
 from src.cleanup import SecureWiper
 from src.config import Config, get_credentials_for_platform, get_env_value, load_config
@@ -13,6 +15,7 @@ from src.database import Database, ExtractionRecord, Repository
 from src.discovery import DiscoveryEngine, RepoCandidate
 from src.glm_engine import GlmDecision, GlmEngine
 from src.logger import log_cookie_extraction, log_event, log_secret_injection, setup_logger
+from src.retry_manager import RetryManager
 from src.secrets_manager import SecretsManager
 from src.warp_manager import WarpManager
 
@@ -66,9 +69,14 @@ class Orchestrator:
                 await self._transition(State.IDLE)
                 return
 
-            # Phase 2-4: For each candidate, extract, inject, cleanup
-            for candidate in candidates:
-                await self._process_repository(candidate)
+            # Phase 2-4: Process candidates with bounded concurrency
+            semaphore = asyncio.Semaphore(self.context.config.app.max_concurrency)
+
+            async def _process_with_semaphore(candidate: RepoCandidate) -> None:
+                async with semaphore:
+                    await self._process_repository(candidate)
+
+            await asyncio.gather(*[_process_with_semaphore(c) for c in candidates])
 
             await self._transition(State.COMPLETED)
             log_event(self.logger, "Orchestrator run completed successfully")
@@ -88,11 +96,10 @@ class Orchestrator:
         # Filter to repositories that likely need authentication
         filtered = []
         for candidate in candidates:
-            # Use GLM to analyze if this repo needs cookies
-            decision = self.context.glm.decide(
-                f"Analyze repository {candidate.name} at {candidate.url}. "
-                "Does this repository likely require authentication cookies for external services? "
-                "Respond with action: 'extract' if likely, 'skip' if not."
+            # Use rule-based engine to analyze if this repo needs cookies
+            decision = self.context.glm.should_extract_cookies(
+                repo_name=candidate.name,
+                repo_description=None,
             )
             log_event(
                 self.logger,
@@ -104,14 +111,16 @@ class Orchestrator:
 
             if decision.action.lower() in ("extract", "yes", "true"):
                 filtered.append(candidate)
-                # Store in database
-                self.context.database.add_repository(
+                # Store in database and capture the real repo ID
+                repo_id = self.context.database.add_repository(
                     Repository(
                         name=candidate.name,
                         url=candidate.url,
                         requires_cookies=True
                     )
                 )
+                # Attach repo_id to candidate for downstream use
+                candidate._repo_id = repo_id  # type: ignore[attr-defined]
 
         log_event(self.logger, f"Discovered {len(filtered)} repositories requiring cookies")
         return filtered
@@ -121,12 +130,13 @@ class Orchestrator:
         log_event(self.logger, "Processing repository", repo=candidate.name)
 
         # Get the repository ID from database
-        repos = self.context.database.list_repositories()
-        repo_id = None
-        for repo in repos:
-            if repo.name == candidate.name:
-                # Find the ID by querying - we need to store this properly
-                break
+        repo_id = getattr(candidate, "_repo_id", None)
+        if repo_id is None:
+            repos = self.context.database.list_repositories()
+            for repo in repos:
+                if repo.name == candidate.name:
+                    repo_id = repo.name  # fallback, will resolve below
+                    break
 
         # Phase 2: Extraction
         extraction_result = await self._extract_cookies(candidate)
@@ -138,7 +148,17 @@ class Orchestrator:
                 repo=candidate.name,
                 status="skipped_2fa"
             )
-            self._record_extraction(candidate, extraction_result)
+            self._record_extraction(candidate, extraction_result, repo_id=repo_id)
+            return
+
+        if extraction_result.has_captcha:
+            log_event(
+                self.logger,
+                f"Skipping {candidate.name} - CAPTCHA detected",
+                repo=candidate.name,
+                status="skipped_captcha"
+            )
+            self._record_extraction(candidate, extraction_result, repo_id=repo_id)
             return
 
         if not extraction_result.success:
@@ -148,7 +168,7 @@ class Orchestrator:
                 repo=candidate.name,
                 error=extraction_result.error_message
             )
-            self._record_extraction(candidate, extraction_result)
+            self._record_extraction(candidate, extraction_result, repo_id=repo_id)
             return
 
         # Track cookies for cleanup
@@ -158,10 +178,10 @@ class Orchestrator:
         await self._inject_cookies(candidate, extraction_result.cookies)
 
         # Phase 4: Cleanup (immediate)
-        await self._cleanup_repository(candidate, extraction_result)
+        await self._cleanup_repository(candidate, extraction_result, repo_id=repo_id)
 
     async def _extract_cookies(self, candidate: RepoCandidate) -> ExtractionResult:
-        """Extract cookies for a repository."""
+        """Extract cookies for a repository with retry/backoff and WARP rotation."""
         await self._transition(State.EXTRACTING)
 
         # Rotate IP if WARP is available
@@ -172,23 +192,31 @@ class Orchestrator:
             except Exception as e:
                 log_event(self.logger, "WARP rotation failed", error=str(e))
 
-        # Determine platform from repository
         platform = self._detect_platform(candidate)
-
-        # Get credentials if available
         credentials = get_credentials_for_platform(platform, self.context.config)
-
-        # Extract cookies using browser automation
         browser = self.context.browser or BrowserAutomation(headless=True)
-
         login_url = self._get_login_url(platform, candidate)
 
-        result = browser.extract_cookies(
-            url=login_url,
-            username=credentials.get("username") if credentials else None,
-            password=credentials.get("password") if credentials else None,
-            platform=platform
+        retry_manager = RetryManager(
+            max_attempts=self.context.config.app.max_retries,
+            multiplier=2.0,
+            min_wait=5.0,
+            max_wait=60.0,
         )
+
+        @retry_manager.retry_with_warp_rotation(
+            warp=self.context.warp,
+            exceptions=(Exception,),
+        )
+        async def _do_extract() -> ExtractionResult:
+            return await browser.extract_cookies(
+                url=login_url,
+                username=credentials.get("username") if credentials else None,
+                password=credentials.get("password") if credentials else None,
+                platform=platform,
+            )
+
+        result = await _do_extract()
 
         log_cookie_extraction(
             self.logger,
@@ -234,7 +262,8 @@ class Orchestrator:
     async def _cleanup_repository(
         self,
         candidate: RepoCandidate,
-        extraction_result: ExtractionResult
+        extraction_result: ExtractionResult,
+        repo_id: Optional[int] = None,
     ) -> None:
         """Cleanup sensitive data for a single repository."""
         await self._transition(State.CLEANUP)
@@ -243,7 +272,7 @@ class Orchestrator:
         extraction_result.wipe_cookies()
 
         # Record metadata (no sensitive values)
-        self._record_extraction(candidate, extraction_result)
+        self._record_extraction(candidate, extraction_result, repo_id=repo_id)
 
         log_event(
             self.logger,
@@ -251,17 +280,45 @@ class Orchestrator:
             repo=candidate.name
         )
 
-    def _record_extraction(self, candidate: RepoCandidate, result: ExtractionResult) -> None:
+    def _record_extraction(
+        self,
+        candidate: RepoCandidate,
+        result: ExtractionResult,
+        repo_id: Optional[int] = None,
+    ) -> None:
         """Record extraction metadata to database."""
-        # Note: This only records metadata, not cookie values
+        # Resolve repository_id if not provided
+        repository_id = repo_id
+        if repository_id is None or not isinstance(repository_id, int):
+            repos = self.context.database.list_repositories()
+            for repo in repos:
+                if repo.name == candidate.name:
+                    # We need the integer id; our database returns Repository objects without id.
+                    # Use a lookup via name in the database to fetch the id.
+                    break
+            # Fallback: try to fetch from database by querying
+            try:
+                import sqlite3
+                conn = sqlite3.connect(self.context.database.path)
+                row = conn.execute(
+                    "SELECT id FROM repositories WHERE name = ?", (candidate.name,)
+                ).fetchone()
+                conn.close()
+                if row:
+                    repository_id = int(row[0])
+            except Exception:
+                pass
+            if not isinstance(repository_id, int):
+                repository_id = 0
+
         record = ExtractionRecord(
-            repository_id=0,  # Would need to fetch actual ID
+            repository_id=repository_id,
             platform=self._detect_platform(candidate),
             cookie_count=len(result.cookies),
             has_2fa=result.has_2fa,
             success=result.success,
             error_message=result.error_message,
-            expires_at=None,  # Could parse from cookies
+            expires_at=None,
         )
 
         self.context.database.add_audit_event(
@@ -278,6 +335,13 @@ class Orchestrator:
         for cookie in self._extracted_cookies:
             cookie.wipe()
         self._extracted_cookies = []
+
+        # Close browser if we created it
+        if self.context.browser:
+            try:
+                await self.context.browser.close()
+            except Exception:
+                pass
 
         # Force garbage collection
         SecureWiper.force_gc()
@@ -360,7 +424,14 @@ def build_orchestrator() -> Orchestrator:
     except Exception:
         pass  # WARP is optional
 
-    browser = BrowserAutomation(headless=True)
+    browser = BrowserAutomation(
+        headless=True,
+        profile_dir=config.app.profile_dir,
+        enable_har=config.app.enable_har,
+        har_dir=config.app.har_dir,
+        enable_tracing=config.app.enable_tracing,
+        tracing_dir=config.app.tracing_dir,
+    )
 
     context = OrchestratorContext(
         config=config,

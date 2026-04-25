@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import time
 from dataclasses import dataclass
 
+import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
@@ -49,3 +51,34 @@ class WarpManager:
                 return
             time.sleep(2)
         raise TimeoutError("WARP connection timed out")
+
+    # Async wrappers
+
+    async def connect_async(self) -> None:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.connect)
+
+    async def disconnect_async(self) -> None:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.disconnect)
+
+    async def rotate_ip_async(self) -> None:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.rotate_ip)
+
+    async def status_async(self) -> WarpStatus:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.status)
+
+    def get_ip(self) -> str | None:
+        """Return current public IP via external service."""
+        try:
+            response = httpx.get("https://api.ipify.org?format=json", timeout=10)
+            response.raise_for_status()
+            return response.json().get("ip")
+        except Exception:
+            return None
+
+    async def get_ip_async(self) -> str | None:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.get_ip)

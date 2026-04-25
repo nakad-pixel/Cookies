@@ -14,6 +14,12 @@ class AppConfig:
     max_concurrency: int
     shard_id: int
     shard_total: int
+    profile_dir: str
+    max_retries: int
+    har_dir: str
+    tracing_dir: str
+    enable_har: bool
+    enable_tracing: bool
 
 
 @dataclass(frozen=True)
@@ -97,6 +103,12 @@ def load_config(path: Path | None = None) -> Config:
             max_concurrency=int(app.get("max_concurrency", 3)),
             shard_id=int(app.get("shard_id", 0)),
             shard_total=int(app.get("shard_total", 1)),
+            profile_dir=str(app.get("profile_dir", "data/profiles")),
+            max_retries=int(app.get("max_retries", 3)),
+            har_dir=str(app.get("har_dir", "data/har")),
+            tracing_dir=str(app.get("tracing_dir", "data/traces")),
+            enable_har=bool(app.get("enable_har", False)),
+            enable_tracing=bool(app.get("enable_tracing", False)),
         ),
         github=GitHubConfig(
             api_url=github.get("api_url", "https://api.github.com"),

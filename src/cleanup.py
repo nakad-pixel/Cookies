@@ -20,13 +20,11 @@ class SecureWiper:
         """
         if not s:
             return
-        length = len(s)
-        for i in range(length):
-            try:
-                # Best effort - strings are immutable in Python
-                pass
-            except Exception:
-                pass
+        # Convert to mutable bytearray, overwrite, then force GC
+        data = bytearray(s, encoding="utf-8")
+        SecureWiper.wipe_bytes(data)
+        del data
+        gc.collect()
 
     @staticmethod
     def wipe_bytes(b: bytearray) -> None:
@@ -110,7 +108,7 @@ def redact_cookies_from_log(message: str) -> str:
         (r'"value"\s*:\s*"[^"]*"', '"value":"[REDACTED]"'),
         (r'"cookie"\s*:\s*"[^"]*"', '"cookie":"[REDACTED]"'),
         (r'Cookie:\s*[^\s]+', 'Cookie: [REDACTED]'),
-        (r'Authorization:\s*[^\s]+', 'Authorization: [REDACTED]'),
+        (r'Authorization:\s*Bearer\s+[^\s]+', 'Authorization: Bearer [REDACTED]'),
         (r'password[=:]\s*[^\s,&]+', 'password=[REDACTED]'),
         (r'token[=:]\s*[^\s,&]+', 'token=[REDACTED]'),
         (r'secret[=:]\s*[^\s,&]+', 'secret=[REDACTED]'),

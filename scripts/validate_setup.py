@@ -51,10 +51,10 @@ def check_dependencies() -> list[tuple[bool, str]]:
         results.append((False, "✗ PyNaCl not installed"))
 
     try:
-        import playwright
-        results.append((True, "✓ Playwright installed (for browser automation)"))
+        import patchright
+        results.append((True, "✓ Patchright installed (for browser automation)"))
     except ImportError:
-        results.append((False, "✗ Playwright not installed"))
+        results.append((False, "✗ Patchright not installed"))
 
     try:
         import httpx
