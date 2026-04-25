@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS repositories (
     url TEXT NOT NULL,
     requires_cookies INTEGER DEFAULT 0,
     last_scanned_at TEXT,
-    created_at TEXT DEFAULT datetime('now')
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Cookie extraction metadata only - NO cookie values stored
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     platform TEXT,
     status TEXT,
     message TEXT,
-    created_at TEXT DEFAULT datetime('now')
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 -- State tracking
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS platform_configs (
     login_url TEXT,
     cookie_domain TEXT,
     requires_auth INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT datetime('now')
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
 

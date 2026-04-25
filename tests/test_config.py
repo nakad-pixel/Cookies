@@ -43,6 +43,8 @@ app:
 
         assert config.app.name == "test"
         assert config.app.max_concurrency == 3  # Default
+        assert config.app.profile_dir == "data/profiles"
+        assert config.app.max_retries == 3
         assert config.github.api_url == "https://api.github.com"  # Default
 
     def test_storage_config_no_encryption(self, tmp_path):
@@ -126,7 +128,18 @@ credentials:
 class TestConfigClasses:
     def test_app_config_frozen(self):
         """Test that AppConfig is immutable."""
-        config = AppConfig(name="test", max_concurrency=3, shard_id=0, shard_total=1)
+        config = AppConfig(
+            name="test",
+            max_concurrency=3,
+            shard_id=0,
+            shard_total=1,
+            profile_dir="data/profiles",
+            max_retries=3,
+            har_dir="data/har",
+            tracing_dir="data/traces",
+            enable_har=False,
+            enable_tracing=False,
+        )
         with pytest.raises(Exception):  # FrozenInstanceError
             config.name = "modified"
 

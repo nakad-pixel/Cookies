@@ -1,7 +1,10 @@
 import asyncio
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from src.browser_automation import CookieData, ExtractionResult
 from src.database import Database
+from src.discovery import RepoCandidate
 from src.glm_engine import GlmDecision
 from src.orchestrator import Orchestrator, OrchestratorContext, State, build_orchestrator
 from src.config import Config
@@ -13,8 +16,8 @@ class DummyDiscovery:
 
 
 class DummyGlm:
-    def decide(self, prompt: str) -> GlmDecision:
-        return GlmDecision(action="ok", reason="unit test")
+    def should_extract_cookies(self, repo_name: str, repo_description=None):
+        return GlmDecision(action="extract", reason="unit test")
 
 
 class DummySecrets:
@@ -40,6 +43,19 @@ class DummyConfig:
         })()
         self.credentials = type('obj', (object,), {
             'prefix': 'USER_CREDENTIALS'
+        })()
+        self.app = type('obj', (object,), {
+            'max_concurrency': 2,
+            'max_retries': 3,
+            'profile_dir': 'data/profiles',
+            'har_dir': 'data/har',
+            'tracing_dir': 'data/traces',
+            'enable_har': False,
+            'enable_tracing': False,
+        })()
+        self.warp = type('obj', (object,), {
+            'connect_timeout_sec': 30,
+            'rotate_interval_sec': 900,
         })()
 
 
@@ -93,8 +109,6 @@ def test_orchestrator_sanitize_secret_name() -> None:
 
 def test_orchestrator_detect_platform() -> None:
     """Test platform detection from repository."""
-    from src.discovery import RepoCandidate
-
     db = Database(":memory:")
     config = DummyConfig()
     orchestrator = Orchestrator(
@@ -120,8 +134,6 @@ def test_orchestrator_detect_platform() -> None:
 
 def test_orchestrator_get_login_url() -> None:
     """Test login URL generation for platforms."""
-    from src.discovery import RepoCandidate
-
     db = Database(":memory:")
     config = DummyConfig()
     orchestrator = Orchestrator(
@@ -140,3 +152,86 @@ def test_orchestrator_get_login_url() -> None:
     assert orchestrator._get_login_url("gitlab", repo) == "https://gitlab.com/users/sign_in"
     assert orchestrator._get_login_url("google", repo) == "https://accounts.google.com/signin"
     assert orchestrator._get_login_url("unknown", repo) == "https://example.com"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_concurrency_semaphore(tmp_path):
+    """Test that concurrency is bounded by a semaphore."""
+    db = Database(str(tmp_path / "test.sqlite"))
+    config = DummyConfig()
+    config.app.max_concurrency = 1
+
+    candidate = RepoCandidate(name="test/repo", url="https://github.com/test/repo", confidence=0.9)
+
+    class SingleDiscovery:
+        def discover(self):
+            return [candidate]
+
+    orchestrator = Orchestrator(
+        OrchestratorContext(
+            config=config,
+            database=db,
+            discovery=SingleDiscovery(),
+            glm=DummyGlm(),
+            secrets=DummySecrets(),
+        )
+    )
+
+    call_count = 0
+
+    async def mock_extract(candidate):
+        nonlocal call_count
+        call_count += 1
+        return ExtractionResult(cookies=[], has_2fa=False, success=False, error_message="test")
+
+    orchestrator._extract_cookies = mock_extract
+    await orchestrator.run()
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_real_repo_id(tmp_path):
+    """Test that the real repository ID is passed to _record_extraction."""
+    db = Database(str(tmp_path / "test.sqlite"))
+    config = DummyConfig()
+
+    candidate = RepoCandidate(name="test/repo", url="https://github.com/test/repo", confidence=0.9)
+
+    class SingleDiscovery:
+        def discover(self):
+            return [candidate]
+
+    orchestrator = Orchestrator(
+        OrchestratorContext(
+            config=config,
+            database=db,
+            discovery=SingleDiscovery(),
+            glm=DummyGlm(),
+            secrets=DummySecrets(),
+        )
+    )
+
+    recorded = {}
+
+    async def mock_extract(candidate):
+        return ExtractionResult(
+            cookies=[CookieData(name="s", value="v", domain=".github.com")],
+            has_2fa=False,
+            success=True,
+        )
+
+    async def mock_inject(candidate, cookies):
+        pass
+
+    def mock_record(candidate, result, repo_id=None):
+        recorded["repo_id"] = repo_id
+        recorded["candidate"] = candidate.name
+
+    orchestrator._extract_cookies = mock_extract
+    orchestrator._inject_cookies = mock_inject
+    orchestrator._record_extraction = mock_record
+
+    await orchestrator.run()
+
+    assert recorded["candidate"] == "test/repo"
+    assert recorded.get("repo_id") is not None

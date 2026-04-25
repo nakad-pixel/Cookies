@@ -150,3 +150,46 @@ class TestWarpManager:
 
         # Should have been called multiple times due to retry
         assert mock_run.call_count > 1
+
+
+class TestWarpManagerAsync:
+    @pytest.mark.asyncio
+    async def test_connect_async(self):
+        """Test async connect wrapper."""
+        manager = WarpManager()
+        manager.connect = Mock()
+        await manager.connect_async()
+        manager.connect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_async(self):
+        """Test async disconnect wrapper."""
+        manager = WarpManager()
+        manager.disconnect = Mock()
+        await manager.disconnect_async()
+        manager.disconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rotate_ip_async(self):
+        """Test async rotate_ip wrapper."""
+        manager = WarpManager()
+        manager.rotate_ip = Mock()
+        await manager.rotate_ip_async()
+        manager.rotate_ip.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_status_async(self):
+        """Test async status wrapper."""
+        manager = WarpManager()
+        manager.status = Mock(return_value=WarpStatus(connected=True, ip="1.1.1.1"))
+        result = await manager.status_async()
+        assert result.connected is True
+        assert result.ip == "1.1.1.1"
+
+    @pytest.mark.asyncio
+    async def test_get_ip_async(self):
+        """Test async get_ip wrapper."""
+        manager = WarpManager()
+        manager.get_ip = Mock(return_value="8.8.8.8")
+        result = await manager.get_ip_async()
+        assert result == "8.8.8.8"
