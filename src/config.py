@@ -43,11 +43,13 @@ class StorageConfig:
 
 
 @dataclass(frozen=True)
-class GlmConfig:
-    api_url: str
-    api_key_env: str
-    model: str
-    monthly_budget_usd: float
+class AiVisionConfig:
+    engine: str
+    gemini_api_key_env: str
+    openrouter_api_key_env: str
+    ollama_url: str
+    max_steps: int
+    screenshot_max_width: int
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,7 @@ class Config:
     github: GitHubConfig
     logging: LoggingConfig
     storage: StorageConfig
-    glm: GlmConfig
+    ai_vision: AiVisionConfig
     warp: WarpConfig
     credentials: CredentialsConfig
 
@@ -93,7 +95,7 @@ def load_config(path: Path | None = None) -> Config:
     github = raw.get("github", {})
     logging_cfg = raw.get("logging", {})
     storage = raw.get("storage", {})
-    glm = raw.get("glm", {})
+    ai_vision = raw.get("ai_vision", {})
     warp = raw.get("warp", {})
     credentials = raw.get("credentials", {})
 
@@ -123,11 +125,13 @@ def load_config(path: Path | None = None) -> Config:
         storage=StorageConfig(
             database_path=storage.get("database_path", "data/cookie_guardian.sqlite"),
         ),
-        glm=GlmConfig(
-            api_url=glm.get("api_url", "https://open.bigmodel.cn/api/paas/v4/chat/completions"),
-            api_key_env=glm.get("api_key_env", "GLM_API_KEY"),
-            model=glm.get("model", "glm-4-air"),
-            monthly_budget_usd=float(glm.get("monthly_budget_usd", 0.2)),
+        ai_vision=AiVisionConfig(
+            engine=ai_vision.get("engine", "gemini"),
+            gemini_api_key_env=ai_vision.get("gemini_api_key_env", "GEMINI_API_KEY"),
+            openrouter_api_key_env=ai_vision.get("openrouter_api_key_env", "OPENROUTER_API_KEY"),
+            ollama_url=ai_vision.get("ollama_url", "http://localhost:11434"),
+            max_steps=int(ai_vision.get("max_steps", 30)),
+            screenshot_max_width=int(ai_vision.get("screenshot_max_width", 800)),
         ),
         warp=WarpConfig(
             connect_timeout_sec=int(warp.get("connect_timeout_sec", 30)),

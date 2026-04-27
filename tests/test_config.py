@@ -9,6 +9,7 @@ from src.config import (
     AppConfig,
     GitHubConfig,
     StorageConfig,
+    AiVisionConfig,
 )
 
 
@@ -59,6 +60,34 @@ storage:
         assert config.storage.database_path == "data/test.sqlite"
         # Should not have encryption_key_env attribute
         assert not hasattr(config.storage, 'encryption_key_env')
+
+    def test_ai_vision_config(self, tmp_path):
+        """Test that ai_vision config is parsed correctly."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("""
+ai_vision:
+  engine: openrouter
+  gemini_api_key_env: MY_GEMINI_KEY
+  max_steps: 20
+""")
+        config = load_config(config_path)
+
+        assert isinstance(config.ai_vision, AiVisionConfig)
+        assert config.ai_vision.engine == "openrouter"
+        assert config.ai_vision.gemini_api_key_env == "MY_GEMINI_KEY"
+        assert config.ai_vision.max_steps == 20
+        assert config.ai_vision.screenshot_max_width == 800  # Default
+
+    def test_no_glm_section(self, tmp_path):
+        """Test that old glm section is not required."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("""
+app:
+  name: test
+""")
+        config = load_config(config_path)
+        # Should not have glm attribute
+        assert not hasattr(config, 'glm')
 
 
 class TestGetEnvValue:
@@ -158,3 +187,16 @@ class TestConfigClasses:
         """Test StorageConfig creation."""
         config = StorageConfig(database_path="data/test.sqlite")
         assert config.database_path == "data/test.sqlite"
+
+    def test_ai_vision_config_creation(self):
+        """Test AiVisionConfig creation."""
+        config = AiVisionConfig(
+            engine="gemini",
+            gemini_api_key_env="GEMINI_API_KEY",
+            openrouter_api_key_env="OPENROUTER_API_KEY",
+            ollama_url="http://localhost:11434",
+            max_steps=30,
+            screenshot_max_width=800,
+        )
+        assert config.engine == "gemini"
+        assert config.max_steps == 30

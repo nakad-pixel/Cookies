@@ -34,3 +34,31 @@ def sample_extraction_result():
         has_2fa=False,
         success=True,
     )
+
+
+@pytest.fixture()
+def mock_vision_engine():
+    """Return a mock vision engine that returns a LOGIN_SUCCESS action."""
+    from unittest.mock import AsyncMock
+    from src.vision_engines.models import ActionType, AgentAction
+
+    engine = AsyncMock()
+    engine.analyze_screenshot = AsyncMock(return_value=AgentAction(
+        thought="Logged in",
+        action=ActionType.LOGIN_SUCCESS,
+        confidence=1.0,
+    ))
+    return engine
+
+
+@pytest.fixture()
+def mock_repo_analyzer():
+    """Return a mock repo analyzer that returns a GitHub platform."""
+    from unittest.mock import MagicMock
+    from src.repo_analyzer import TargetPlatform
+
+    analyzer = MagicMock()
+    analyzer.analyze.return_value = [
+        TargetPlatform(name="github", login_url="https://github.com/login", cookie_domain=".github.com", confidence=0.8),
+    ]
+    return analyzer

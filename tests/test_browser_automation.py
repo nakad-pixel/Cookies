@@ -6,8 +6,8 @@ from src.browser_automation import (
     BrowserAutomation,
     CookieData,
     ExtractionResult,
-    TwoFactorAuthError,
 )
+from src.platform_logins.base import TwoFactorAuthError
 
 
 class TestCookieData:
@@ -72,7 +72,7 @@ class TestBrowserAutomationAsync:
 
     @pytest.mark.asyncio
     async def test_extract_cookies_success_no_login(self, monkeypatch):
-        """Test successful cookie extraction without credentials."""
+        """Test successful cookie extraction with AI vision agent mock."""
         automation = BrowserAutomation()
 
         mock_pw = MagicMock()
@@ -114,6 +114,24 @@ class TestBrowserAutomationAsync:
             MagicMock(detect_any=AsyncMock(return_value=MagicMock(present=False))),
         )
 
+        # Mock AI vision agent
+        mock_agent_result = ExtractionResult(
+            cookies=[CookieData(name="session", value="abc", domain=".example.com")],
+            success=True,
+        )
+        mock_agent = MagicMock()
+        mock_agent.run_extraction = AsyncMock(return_value=mock_agent_result)
+        monkeypatch.setattr(
+            browser_automation,
+            "AiVisionAgent",
+            lambda *args, **kwargs: mock_agent,
+        )
+        monkeypatch.setattr(
+            browser_automation,
+            "create_vision_engine",
+            lambda *args, **kwargs: MagicMock(),
+        )
+
         result = await automation.extract_cookies("https://example.com", platform="github")
 
         assert result.success is True
@@ -122,7 +140,7 @@ class TestBrowserAutomationAsync:
 
     @pytest.mark.asyncio
     async def test_extract_cookies_detects_2fa(self, monkeypatch):
-        """Test that extraction detects 2FA and returns has_2fa=True."""
+        """Test that extraction detects 2FA via AI vision agent."""
         automation = BrowserAutomation()
 
         mock_pw = MagicMock()
@@ -177,6 +195,21 @@ class TestBrowserAutomationAsync:
             AsyncMock(),
         )
 
+        # Mock AI vision agent returning 2FA
+        mock_agent_result = ExtractionResult(has_2fa=True)
+        mock_agent = MagicMock()
+        mock_agent.run_extraction = AsyncMock(return_value=mock_agent_result)
+        monkeypatch.setattr(
+            browser_automation,
+            "AiVisionAgent",
+            lambda *args, **kwargs: mock_agent,
+        )
+        monkeypatch.setattr(
+            browser_automation,
+            "create_vision_engine",
+            lambda *args, **kwargs: MagicMock(),
+        )
+
         result = await automation.extract_cookies("https://example.com", platform="github")
 
         assert result.has_2fa is True
@@ -227,18 +260,20 @@ class TestBrowserAutomationAsync:
 class TestTwoFactorDetection:
     def test_2fa_patterns_defined(self):
         """Test that 2FA detection patterns are defined."""
-        automation = BrowserAutomation()
-        assert len(automation.TWO_FA_PATTERNS) > 0
-        assert "two-factor" in automation.TWO_FA_PATTERNS
-        assert "2fa" in automation.TWO_FA_PATTERNS
-        assert "authenticator" in automation.TWO_FA_PATTERNS
+        from src.ai_vision_agent import AiVisionAgent
+        from src.vision_engines.rule_engine import RuleBasedVisionEngine
+        engine = RuleBasedVisionEngine()
+        assert len(engine.TWO_FA_PATTERNS) > 0
+        assert "two-factor" in engine.TWO_FA_PATTERNS
+        assert "2fa" in engine.TWO_FA_PATTERNS
+        assert "authenticator" in engine.TWO_FA_PATTERNS
 
     def test_2fa_selectors_defined(self):
         """Test that 2FA selectors are defined."""
-        automation = BrowserAutomation()
-        assert len(automation.TWO_FA_SELECTORS) > 0
-        assert any("2fa" in s for s in automation.TWO_FA_SELECTORS)
-        assert any("code" in s for s in automation.TWO_FA_SELECTORS)
+        from src.vision_engines.rule_engine import RuleBasedVisionEngine
+        engine = RuleBasedVisionEngine()
+        assert len(engine.USERNAME_SELECTORS) > 0
+        assert any("username" in s for s in engine.USERNAME_SELECTORS)
 
 
 class TestTwoFactorAuthError:

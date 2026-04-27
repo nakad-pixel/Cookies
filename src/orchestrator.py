@@ -4,19 +4,24 @@ import asyncio
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
-
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from typing import List, Optional, Tuple
 
 from src.browser_automation import BrowserAutomation, CookieData, ExtractionResult
 from src.cleanup import SecureWiper
 from src.config import Config, get_credentials_for_platform, get_env_value, load_config
 from src.database import Database, ExtractionRecord, Repository
+from src.decision_engine import DecisionEngine
 from src.discovery import DiscoveryEngine, RepoCandidate
-from src.glm_engine import GlmDecision, GlmEngine
-from src.logger import log_cookie_extraction, log_event, log_secret_injection, setup_logger
+from src.logger import (
+    log_cookie_extraction,
+    log_event,
+    log_secret_injection,
+    log_variable_injection_warning,
+    setup_logger,
+)
+from src.repo_analyzer import RepoAnalyzer, TargetPlatform
 from src.retry_manager import RetryManager
-from src.secrets_manager import SecretsManager
+from src.secrets_manager import GitHubActionsManager
 from src.warp_manager import WarpManager
 
 
@@ -24,6 +29,7 @@ class State(str, Enum):
     """Orchestrator states following the ephemeral flow."""
     IDLE = "IDLE"
     DISCOVERING = "DISCOVERING"
+    ANALYZING = "ANALYZING"
     EXTRACTING = "EXTRACTING"
     INJECTING = "INJECTING"
     CLEANUP = "CLEANUP"
@@ -36,8 +42,9 @@ class OrchestratorContext:
     config: Config
     database: Database
     discovery: DiscoveryEngine
-    glm: GlmEngine
-    secrets: SecretsManager
+    decision_engine: DecisionEngine
+    repo_analyzer: RepoAnalyzer
+    secrets: GitHubActionsManager
     warp: Optional[WarpManager] = None
     browser: Optional[BrowserAutomation] = None
 
@@ -45,9 +52,9 @@ class OrchestratorContext:
 class Orchestrator:
     """Main orchestrator implementing ephemeral cookie handling.
 
-    Flow: DISCOVER → EXTRACT → INJECT → CLEANUP
+    Flow: DISCOVER → ANALYZE → EXTRACT → INJECT → CLEANUP
     - Cookies are extracted into memory only
-    - Immediately injected to GitHub Secrets
+    - Immediately injected to GitHub Secrets AND Variables
     - Wiped from memory immediately after injection
     - No persistent local storage of cookie values
     """
@@ -69,14 +76,55 @@ class Orchestrator:
                 await self._transition(State.IDLE)
                 return
 
-            # Phase 2-4: Process candidates with bounded concurrency
+            # Phase 2: Analyze each candidate to find target platforms
+            await self._transition(State.ANALYZING)
+            repo_platform_pairs: List[Tuple[RepoCandidate, TargetPlatform, int]] = []
+            for candidate in candidates:
+                platforms = self.context.repo_analyzer.analyze(candidate)
+                decision = self.context.decision_engine.decide(
+                    repo_name=candidate.name,
+                    description=None,
+                    platforms_detected=platforms,
+                )
+                log_event(
+                    self.logger,
+                    "Decision for repository",
+                    repo=candidate.name,
+                    action=decision.action,
+                    reason=decision.reason,
+                )
+                if decision.action.lower() in ("extract", "yes", "true"):
+                    # Store in database and capture the real repo ID
+                    repo_id = self.context.database.add_repository(
+                        Repository(
+                            name=candidate.name,
+                            url=candidate.url,
+                            requires_cookies=True,
+                        )
+                    )
+                    for platform in platforms:
+                        repo_platform_pairs.append((candidate, platform, repo_id))
+
+            if not repo_platform_pairs:
+                log_event(self.logger, "No (repo, platform) pairs to process")
+                await self._transition(State.IDLE)
+                return
+
+            # Phase 3-5: Process (repo, platform) pairs with bounded concurrency
             semaphore = asyncio.Semaphore(self.context.config.app.max_concurrency)
 
-            async def _process_with_semaphore(candidate: RepoCandidate) -> None:
+            async def _process_with_semaphore(
+                candidate: RepoCandidate,
+                platform: TargetPlatform,
+                repo_id: int,
+            ) -> None:
                 async with semaphore:
-                    await self._process_repository(candidate)
+                    await self._process_repo_platform(candidate, platform, repo_id)
 
-            await asyncio.gather(*[_process_with_semaphore(c) for c in candidates])
+            await asyncio.gather(*[
+                _process_with_semaphore(c, p, rid)
+                for c, p, rid in repo_platform_pairs
+            ])
 
             await self._transition(State.COMPLETED)
             log_event(self.logger, "Orchestrator run completed successfully")
@@ -92,63 +140,35 @@ class Orchestrator:
         """Discover repositories that may need cookies."""
         log_event(self.logger, "Starting repository discovery")
         candidates = self.context.discovery.discover()
+        log_event(self.logger, f"Discovered {len(candidates)} candidate repositories")
+        return candidates
 
-        # Filter to repositories that likely need authentication
-        filtered = []
-        for candidate in candidates:
-            # Use rule-based engine to analyze if this repo needs cookies
-            decision = self.context.glm.should_extract_cookies(
-                repo_name=candidate.name,
-                repo_description=None,
-            )
-            log_event(
-                self.logger,
-                "GLM decision for repository",
-                repo=candidate.name,
-                action=decision.action,
-                reason=decision.reason
-            )
+    async def _process_repo_platform(
+        self,
+        candidate: RepoCandidate,
+        platform: TargetPlatform,
+        repo_id: int,
+    ) -> None:
+        """Process a single (repo, platform) pair: extract → inject → cleanup."""
+        log_event(
+            self.logger,
+            "Processing repository-platform pair",
+            repo=candidate.name,
+            platform=platform.name,
+        )
 
-            if decision.action.lower() in ("extract", "yes", "true"):
-                filtered.append(candidate)
-                # Store in database and capture the real repo ID
-                repo_id = self.context.database.add_repository(
-                    Repository(
-                        name=candidate.name,
-                        url=candidate.url,
-                        requires_cookies=True
-                    )
-                )
-                # Attach repo_id to candidate for downstream use
-                candidate._repo_id = repo_id  # type: ignore[attr-defined]
-
-        log_event(self.logger, f"Discovered {len(filtered)} repositories requiring cookies")
-        return filtered
-
-    async def _process_repository(self, candidate: RepoCandidate) -> None:
-        """Process a single repository: extract → inject → cleanup."""
-        log_event(self.logger, "Processing repository", repo=candidate.name)
-
-        # Get the repository ID from database
-        repo_id = getattr(candidate, "_repo_id", None)
-        if repo_id is None:
-            repos = self.context.database.list_repositories()
-            for repo in repos:
-                if repo.name == candidate.name:
-                    repo_id = repo.name  # fallback, will resolve below
-                    break
-
-        # Phase 2: Extraction
-        extraction_result = await self._extract_cookies(candidate)
+        # Phase 3: Extraction
+        extraction_result = await self._extract_cookies(candidate, platform)
 
         if extraction_result.has_2fa:
             log_event(
                 self.logger,
                 f"Skipping {candidate.name} - 2FA detected",
                 repo=candidate.name,
-                status="skipped_2fa"
+                platform=platform.name,
+                status="skipped_2fa",
             )
-            self._record_extraction(candidate, extraction_result, repo_id=repo_id)
+            self._record_extraction(candidate, platform, extraction_result, repo_id=repo_id)
             return
 
         if extraction_result.has_captcha:
@@ -156,9 +176,10 @@ class Orchestrator:
                 self.logger,
                 f"Skipping {candidate.name} - CAPTCHA detected",
                 repo=candidate.name,
-                status="skipped_captcha"
+                platform=platform.name,
+                status="skipped_captcha",
             )
-            self._record_extraction(candidate, extraction_result, repo_id=repo_id)
+            self._record_extraction(candidate, platform, extraction_result, repo_id=repo_id)
             return
 
         if not extraction_result.success:
@@ -166,36 +187,39 @@ class Orchestrator:
                 self.logger,
                 f"Extraction failed for {candidate.name}",
                 repo=candidate.name,
-                error=extraction_result.error_message
+                platform=platform.name,
+                error=extraction_result.error_message,
             )
-            self._record_extraction(candidate, extraction_result, repo_id=repo_id)
+            self._record_extraction(candidate, platform, extraction_result, repo_id=repo_id)
             return
 
         # Track cookies for cleanup
         self._extracted_cookies.extend(extraction_result.cookies)
 
-        # Phase 3: Injection
-        await self._inject_cookies(candidate, extraction_result.cookies)
+        # Phase 4: Injection (both Secret and Variable)
+        await self._inject_cookies(candidate, platform, extraction_result.cookies)
 
-        # Phase 4: Cleanup (immediate)
-        await self._cleanup_repository(candidate, extraction_result, repo_id=repo_id)
+        # Phase 5: Cleanup (immediate)
+        await self._cleanup_repo_platform(candidate, platform, extraction_result, repo_id=repo_id)
 
-    async def _extract_cookies(self, candidate: RepoCandidate) -> ExtractionResult:
-        """Extract cookies for a repository with retry/backoff and WARP rotation."""
+    async def _extract_cookies(
+        self,
+        candidate: RepoCandidate,
+        platform: TargetPlatform,
+    ) -> ExtractionResult:
+        """Extract cookies for a (repo, platform) pair with retry/backoff and WARP rotation."""
         await self._transition(State.EXTRACTING)
 
-        # Rotate IP if WARP is available
+        # Rotate IP if WARP is available (async)
         if self.context.warp:
             try:
-                self.context.warp.rotate_ip()
+                await self.context.warp.rotate_ip_async()
                 log_event(self.logger, "WARP IP rotated")
             except Exception as e:
                 log_event(self.logger, "WARP rotation failed", error=str(e))
 
-        platform = self._detect_platform(candidate)
-        credentials = get_credentials_for_platform(platform, self.context.config)
+        credentials = get_credentials_for_platform(platform.name, self.context.config)
         browser = self.context.browser or BrowserAutomation(headless=True)
-        login_url = self._get_login_url(platform, candidate)
 
         retry_manager = RetryManager(
             max_attempts=self.context.config.app.max_retries,
@@ -210,25 +234,30 @@ class Orchestrator:
         )
         async def _do_extract() -> ExtractionResult:
             return await browser.extract_cookies(
-                url=login_url,
+                url=platform.login_url,
                 username=credentials.get("username") if credentials else None,
                 password=credentials.get("password") if credentials else None,
-                platform=platform,
+                platform=platform.name,
             )
 
         result = await _do_extract()
 
         log_cookie_extraction(
             self.logger,
-            platform=platform,
+            platform=platform.name,
             cookie_count=len(result.cookies),
-            has_2fa=result.has_2fa
+            has_2fa=result.has_2fa,
         )
 
         return result
 
-    async def _inject_cookies(self, candidate: RepoCandidate, cookies: List[CookieData]) -> None:
-        """Inject cookies to GitHub Secrets."""
+    async def _inject_cookies(
+        self,
+        candidate: RepoCandidate,
+        platform: TargetPlatform,
+        cookies: List[CookieData],
+    ) -> None:
+        """Inject cookies to GitHub Secrets AND Variables."""
         await self._transition(State.INJECTING)
 
         if not cookies:
@@ -239,7 +268,7 @@ class Orchestrator:
         cookies_data = [
             {
                 "name": c.name,
-                "value": c.value,  # This is the sensitive value being injected
+                "value": c.value,  # Sensitive value
                 "domain": c.domain,
                 "expires": c.expires,
                 "secure": c.secure,
@@ -249,9 +278,9 @@ class Orchestrator:
         ]
         cookies_json = json.dumps(cookies_data)
 
-        # Inject to GitHub Secrets
-        secret_name = f"COOKIES_{self._sanitize_secret_name(candidate.name)}"
+        secret_name = self._sanitize_secret_name(f"COOKIES_{platform.name}_{candidate.name}")
 
+        # Inject to GitHub Secrets
         try:
             self.context.secrets.put_secret(candidate.name, secret_name, cookies_json)
             log_secret_injection(self.logger, candidate.name, secret_name)
@@ -259,61 +288,48 @@ class Orchestrator:
             log_event(self.logger, "Secret injection failed", repo=candidate.name, error=str(e))
             raise
 
-    async def _cleanup_repository(
+        # Inject to GitHub Variables (with security warning)
+        try:
+            self.context.secrets.put_variable(candidate.name, secret_name, cookies_json)
+            log_variable_injection_warning(self.logger, candidate.name, secret_name)
+        except Exception as e:
+            log_event(self.logger, "Variable injection failed", repo=candidate.name, error=str(e))
+            # Don't raise — variable injection is best-effort
+
+    async def _cleanup_repo_platform(
         self,
         candidate: RepoCandidate,
+        platform: TargetPlatform,
         extraction_result: ExtractionResult,
-        repo_id: Optional[int] = None,
+        repo_id: int,
     ) -> None:
-        """Cleanup sensitive data for a single repository."""
+        """Cleanup sensitive data for a single (repo, platform) pair."""
         await self._transition(State.CLEANUP)
 
         # Wipe all cookie values from memory
         extraction_result.wipe_cookies()
 
         # Record metadata (no sensitive values)
-        self._record_extraction(candidate, extraction_result, repo_id=repo_id)
+        self._record_extraction(candidate, platform, extraction_result, repo_id=repo_id)
 
         log_event(
             self.logger,
             "Cleanup completed - cookie values wiped from memory",
-            repo=candidate.name
+            repo=candidate.name,
+            platform=platform.name,
         )
 
     def _record_extraction(
         self,
         candidate: RepoCandidate,
+        platform: TargetPlatform,
         result: ExtractionResult,
-        repo_id: Optional[int] = None,
+        repo_id: int,
     ) -> None:
         """Record extraction metadata to database."""
-        # Resolve repository_id if not provided
-        repository_id = repo_id
-        if repository_id is None or not isinstance(repository_id, int):
-            repos = self.context.database.list_repositories()
-            for repo in repos:
-                if repo.name == candidate.name:
-                    # We need the integer id; our database returns Repository objects without id.
-                    # Use a lookup via name in the database to fetch the id.
-                    break
-            # Fallback: try to fetch from database by querying
-            try:
-                import sqlite3
-                conn = sqlite3.connect(self.context.database.path)
-                row = conn.execute(
-                    "SELECT id FROM repositories WHERE name = ?", (candidate.name,)
-                ).fetchone()
-                conn.close()
-                if row:
-                    repository_id = int(row[0])
-            except Exception:
-                pass
-            if not isinstance(repository_id, int):
-                repository_id = 0
-
         record = ExtractionRecord(
-            repository_id=repository_id,
-            platform=self._detect_platform(candidate),
+            repository_id=repo_id,
+            platform=platform.name,
             cookie_count=len(result.cookies),
             has_2fa=result.has_2fa,
             success=result.success,
@@ -326,8 +342,14 @@ class Orchestrator:
             repository_name=candidate.name,
             platform=record.platform,
             status="success" if result.success else ("2fa" if result.has_2fa else "failed"),
-            message=f"Extracted {record.cookie_count} cookies" if result.success else result.error_message
+            message=f"Extracted {record.cookie_count} cookies" if result.success else result.error_message,
         )
+
+        # Also record in extractions table
+        try:
+            self.context.database.record_extraction(record)
+        except Exception:
+            pass
 
     async def _cleanup(self) -> None:
         """Final cleanup - ensure all sensitive data is wiped."""
@@ -356,42 +378,10 @@ class Orchestrator:
         self.context.database.set_state(state.value)
         log_event(self.logger, "state_transition", state=state.value)
 
-    def _detect_platform(self, candidate: RepoCandidate) -> str:
-        """Detect the platform from repository name or URL."""
-        name_lower = candidate.name.lower()
-        url_lower = candidate.url.lower()
-
-        if "github" in name_lower or "github" in url_lower:
-            return "github"
-        elif "gitlab" in name_lower or "gitlab" in url_lower:
-            return "gitlab"
-        elif "google" in name_lower or "gcp" in name_lower:
-            return "google"
-        elif "aws" in name_lower or "amazon" in name_lower:
-            return "aws"
-        elif "azure" in name_lower or "microsoft" in name_lower:
-            return "azure"
-        else:
-            return "generic"
-
-    def _get_login_url(self, platform: str, candidate: RepoCandidate) -> str:
-        """Get the login URL for a platform."""
-        platform_urls = {
-            "github": "https://github.com/login",
-            "gitlab": "https://gitlab.com/users/sign_in",
-            "google": "https://accounts.google.com/signin",
-            "aws": "https://signin.aws.amazon.com/signin",
-            "azure": "https://login.microsoftonline.com/",
-        }
-        return platform_urls.get(platform, candidate.url)
-
-    def _sanitize_secret_name(self, repo_name: str) -> str:
-        """Convert repo name to valid GitHub secret name."""
-        # Replace invalid characters with underscores
-        sanitized = repo_name.replace("/", "_").replace("-", "_").replace(".", "_")
-        # Remove any non-alphanumeric characters except underscore
+    def _sanitize_secret_name(self, name: str) -> str:
+        """Convert name to valid GitHub secret/variable name."""
+        sanitized = name.replace("/", "_").replace("-", "_").replace(".", "_")
         sanitized = "".join(c if c.isalnum() or c == "_" else "" for c in sanitized)
-        # Ensure it starts with a letter
         if sanitized and not sanitized[0].isalpha():
             sanitized = "REPO_" + sanitized
         return sanitized.upper()
@@ -404,18 +394,12 @@ def build_orchestrator() -> Orchestrator:
     if not token:
         raise RuntimeError("Missing GitHub token")
 
-    glm_key = get_env_value(config.glm.api_key_env)
-
     # Initialize components
     database = Database(config.storage.database_path)
     discovery = DiscoveryEngine(token=token, org=config.github.org)
-    glm = GlmEngine(
-        api_url=config.glm.api_url,
-        api_key=glm_key,
-        model=config.glm.model,
-        monthly_budget_usd=config.glm.monthly_budget_usd,
-    )
-    secrets = SecretsManager(config.github.api_url, token)
+    decision_engine = DecisionEngine()
+    repo_analyzer = RepoAnalyzer()
+    secrets = GitHubActionsManager(config.github.api_url, token)
 
     # Optional components
     warp: Optional[WarpManager] = None
@@ -437,7 +421,8 @@ def build_orchestrator() -> Orchestrator:
         config=config,
         database=database,
         discovery=discovery,
-        glm=glm,
+        decision_engine=decision_engine,
+        repo_analyzer=repo_analyzer,
         secrets=secrets,
         warp=warp,
         browser=browser,

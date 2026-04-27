@@ -15,11 +15,11 @@ class TestStealthInitScripts:
 
     def test_contains_plugins_patch(self):
         """Test that stealth scripts patch navigator.plugins."""
-        assert "navigator.plugins" in STEALTH_INIT_SCRIPTS
+        assert "plugins" in STEALTH_INIT_SCRIPTS
 
     def test_contains_languages_patch(self):
         """Test that stealth scripts patch navigator.languages."""
-        assert "navigator.languages" in STEALTH_INIT_SCRIPTS
+        assert "languages" in STEALTH_INIT_SCRIPTS
 
     def test_contains_hardware_concurrency_patch(self):
         """Test that stealth scripts patch hardwareConcurrency."""

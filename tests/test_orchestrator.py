@@ -4,10 +4,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.browser_automation import CookieData, ExtractionResult
 from src.database import Database
+from src.decision_engine import Decision
 from src.discovery import RepoCandidate
-from src.glm_engine import GlmDecision
 from src.orchestrator import Orchestrator, OrchestratorContext, State, build_orchestrator
 from src.config import Config
+from src.repo_analyzer import TargetPlatform
 
 
 class DummyDiscovery:
@@ -15,13 +16,21 @@ class DummyDiscovery:
         return []
 
 
-class DummyGlm:
-    def should_extract_cookies(self, repo_name: str, repo_description=None):
-        return GlmDecision(action="extract", reason="unit test")
+class DummyDecisionEngine:
+    def decide(self, repo_name, description, platforms_detected):
+        return Decision(action="extract", reason="unit test")
+
+
+class DummyRepoAnalyzer:
+    def analyze(self, candidate):
+        return [TargetPlatform(name="github", login_url="https://github.com/login", cookie_domain=".github.com", confidence=0.8)]
 
 
 class DummySecrets:
     def put_secret(self, repo: str, name: str, value: str) -> None:
+        pass
+
+    def put_variable(self, repo: str, name: str, value: str) -> None:
         pass
 
 
@@ -35,11 +44,13 @@ class DummyConfig:
         self.storage = type('obj', (object,), {
             'database_path': ':memory:'
         })()
-        self.glm = type('obj', (object,), {
-            'api_url': 'https://api.example.com',
-            'api_key_env': 'GLM_API_KEY',
-            'model': 'test',
-            'monthly_budget_usd': 0.1
+        self.ai_vision = type('obj', (object,), {
+            'engine': 'gemini',
+            'gemini_api_key_env': 'GEMINI_API_KEY',
+            'openrouter_api_key_env': 'OPENROUTER_API_KEY',
+            'ollama_url': 'http://localhost:11434',
+            'max_steps': 30,
+            'screenshot_max_width': 800,
         })()
         self.credentials = type('obj', (object,), {
             'prefix': 'USER_CREDENTIALS'
@@ -68,7 +79,8 @@ def test_orchestrator_run_empty_repos(tmp_path) -> None:
             config=config,
             database=db,
             discovery=DummyDiscovery(),
-            glm=DummyGlm(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
             secrets=DummySecrets(),
         )
     )
@@ -80,6 +92,7 @@ def test_state_enum_values() -> None:
     """Test State enum has expected values."""
     assert State.IDLE == "IDLE"
     assert State.DISCOVERING == "DISCOVERING"
+    assert State.ANALYZING == "ANALYZING"
     assert State.EXTRACTING == "EXTRACTING"
     assert State.INJECTING == "INJECTING"
     assert State.CLEANUP == "CLEANUP"
@@ -95,7 +108,8 @@ def test_orchestrator_sanitize_secret_name() -> None:
             config=config,
             database=db,
             discovery=DummyDiscovery(),
-            glm=DummyGlm(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
             secrets=DummySecrets(),
         )
     )
@@ -105,53 +119,6 @@ def test_orchestrator_sanitize_secret_name() -> None:
     assert orchestrator._sanitize_secret_name("my-repo") == "MY_REPO"
     assert orchestrator._sanitize_secret_name("my.repo") == "MY_REPO"
     assert orchestrator._sanitize_secret_name("123abc") == "REPO_123ABC"
-
-
-def test_orchestrator_detect_platform() -> None:
-    """Test platform detection from repository."""
-    db = Database(":memory:")
-    config = DummyConfig()
-    orchestrator = Orchestrator(
-        OrchestratorContext(
-            config=config,
-            database=db,
-            discovery=DummyDiscovery(),
-            glm=DummyGlm(),
-            secrets=DummySecrets(),
-        )
-    )
-
-    github_repo = RepoCandidate(name="test/github-repo", url="https://github.com/test", confidence=0.8)
-    gitlab_repo = RepoCandidate(name="test/gitlab-repo", url="https://gitlab.com/test", confidence=0.8)
-    aws_repo = RepoCandidate(name="test/aws-repo", url="https://aws.amazon.com", confidence=0.8)
-    unknown_repo = RepoCandidate(name="test/unknown", url="https://example.com", confidence=0.8)
-
-    assert orchestrator._detect_platform(github_repo) == "github"
-    assert orchestrator._detect_platform(gitlab_repo) == "gitlab"
-    assert orchestrator._detect_platform(aws_repo) == "aws"
-    assert orchestrator._detect_platform(unknown_repo) == "generic"
-
-
-def test_orchestrator_get_login_url() -> None:
-    """Test login URL generation for platforms."""
-    db = Database(":memory:")
-    config = DummyConfig()
-    orchestrator = Orchestrator(
-        OrchestratorContext(
-            config=config,
-            database=db,
-            discovery=DummyDiscovery(),
-            glm=DummyGlm(),
-            secrets=DummySecrets(),
-        )
-    )
-
-    repo = RepoCandidate(name="test/repo", url="https://example.com", confidence=0.8)
-
-    assert orchestrator._get_login_url("github", repo) == "https://github.com/login"
-    assert orchestrator._get_login_url("gitlab", repo) == "https://gitlab.com/users/sign_in"
-    assert orchestrator._get_login_url("google", repo) == "https://accounts.google.com/signin"
-    assert orchestrator._get_login_url("unknown", repo) == "https://example.com"
 
 
 @pytest.mark.asyncio
@@ -172,19 +139,25 @@ async def test_orchestrator_concurrency_semaphore(tmp_path):
             config=config,
             database=db,
             discovery=SingleDiscovery(),
-            glm=DummyGlm(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
             secrets=DummySecrets(),
         )
     )
 
     call_count = 0
 
-    async def mock_extract(candidate):
+    async def mock_extract(candidate, platform):
         nonlocal call_count
         call_count += 1
         return ExtractionResult(cookies=[], has_2fa=False, success=False, error_message="test")
 
+    async def mock_inject(candidate, platform, cookies):
+        pass
+
     orchestrator._extract_cookies = mock_extract
+    orchestrator._inject_cookies = mock_inject
+
     await orchestrator.run()
     assert call_count == 1
 
@@ -206,26 +179,28 @@ async def test_orchestrator_passes_real_repo_id(tmp_path):
             config=config,
             database=db,
             discovery=SingleDiscovery(),
-            glm=DummyGlm(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
             secrets=DummySecrets(),
         )
     )
 
     recorded = {}
 
-    async def mock_extract(candidate):
+    async def mock_extract(candidate, platform):
         return ExtractionResult(
             cookies=[CookieData(name="s", value="v", domain=".github.com")],
             has_2fa=False,
             success=True,
         )
 
-    async def mock_inject(candidate, cookies):
+    async def mock_inject(candidate, platform, cookies):
         pass
 
-    def mock_record(candidate, result, repo_id=None):
+    def mock_record(candidate, platform, result, repo_id):
         recorded["repo_id"] = repo_id
         recorded["candidate"] = candidate.name
+        recorded["platform"] = platform.name
 
     orchestrator._extract_cookies = mock_extract
     orchestrator._inject_cookies = mock_inject
@@ -235,3 +210,55 @@ async def test_orchestrator_passes_real_repo_id(tmp_path):
 
     assert recorded["candidate"] == "test/repo"
     assert recorded.get("repo_id") is not None
+    assert isinstance(recorded["repo_id"], int)
+    assert recorded["platform"] == "github"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_dual_injection(tmp_path):
+    """Test that both secret and variable are injected."""
+    db = Database(str(tmp_path / "test.sqlite"))
+    config = DummyConfig()
+
+    candidate = RepoCandidate(name="test/repo", url="https://github.com/test/repo", confidence=0.9)
+
+    class SingleDiscovery:
+        def discover(self):
+            return [candidate]
+
+    injected = {"secret": False, "variable": False}
+
+    class TrackingSecrets:
+        def put_secret(self, repo, name, value):
+            injected["secret"] = True
+
+        def put_variable(self, repo, name, value):
+            injected["variable"] = True
+
+    orchestrator = Orchestrator(
+        OrchestratorContext(
+            config=config,
+            database=db,
+            discovery=SingleDiscovery(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
+            secrets=TrackingSecrets(),
+        )
+    )
+
+    async def mock_extract(candidate, platform):
+        return ExtractionResult(
+            cookies=[CookieData(name="session", value="abc", domain=".github.com")],
+            success=True,
+        )
+
+    async def mock_cleanup(candidate, platform, result, repo_id):
+        pass
+
+    orchestrator._extract_cookies = mock_extract
+    orchestrator._cleanup_repo_platform = mock_cleanup
+
+    await orchestrator.run()
+
+    assert injected["secret"] is True
+    assert injected["variable"] is True

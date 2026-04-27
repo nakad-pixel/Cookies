@@ -12,14 +12,14 @@ from src.cleanup import SecureWiper
 from src.header_fingerprinter import HeaderFingerprinter
 from src.human_behavior import (
     emulate_scroll,
-    human_like_click,
-    human_like_typing,
     random_human_wait,
 )
 from src.logger import log_2fa_detected, setup_logger
-from src.platform_logins import get_platform_login
 from src.platform_logins.base import TwoFactorAuthError
 from src.stealth_config import STEALTH_INIT_SCRIPTS, STEALTH_LAUNCH_ARGS, get_fingerprint
+
+from src.ai_vision_agent import AiVisionAgent
+from src.vision_engines import create_vision_engine
 
 try:
     from patchright.async_api import async_playwright, Browser, BrowserContext, Page
@@ -63,39 +63,7 @@ class ExtractionResult:
 
 
 class BrowserAutomation:
-    """Async browser automation with anti-detection, human behavior, and CAPTCHA detection."""
-
-    # 2FA detection patterns - look for these in page content
-    TWO_FA_PATTERNS = [
-        "two-factor",
-        "two factor",
-        "2fa",
-        "2 fa",
-        "two-step",
-        "two step",
-        "authenticator",
-        "verification code",
-        "security code",
-        "sms code",
-        "backup code",
-        "auth code",
-        "enter code",
-        "verify your identity",
-        "additional verification",
-    ]
-
-    # Selectors that might indicate 2FA input fields
-    TWO_FA_SELECTORS = [
-        'input[name*="2fa"]',
-        'input[name*="two"]',
-        'input[name*="code"]',
-        'input[name*="otp"]',
-        'input[name*="totp"]',
-        'input[placeholder*="code" i]',
-        'input[placeholder*="authenticator" i]',
-        '[data-testid*="two-factor"]',
-        '[data-testid*="2fa"]',
-    ]
+    """Async browser automation with anti-detection, human behavior, CAPTCHA detection, and AI vision."""
 
     def __init__(
         self,
@@ -183,10 +151,10 @@ class BrowserAutomation:
         password: Optional[str] = None,
         platform: str = "unknown",
     ) -> ExtractionResult:
-        """Extract cookies from a platform with 2FA and CAPTCHA detection.
+        """Extract cookies from a platform using AI vision agent.
 
         Args:
-            url: The URL to navigate to.
+            url: The login URL to navigate to.
             username: Optional username for login.
             password: Optional password for login.
             platform: Platform name for logging and profile selection.
@@ -213,7 +181,7 @@ class BrowserAutomation:
             await random_human_wait(2.0, 4.0)
             await emulate_scroll(page, max_scrolls=3)
 
-            # CAPTCHA detection
+            # CAPTCHA detection before AI loop
             captcha = await CaptchaDetector.detect_any(page)
             if captcha.present:
                 result.has_captcha = True
@@ -222,169 +190,52 @@ class BrowserAutomation:
                 await self._close_context(context)
                 return result
 
-            # 2FA detection
-            if await self._check_for_2fa(page):
-                result.has_2fa = True
-                log_2fa_detected(self.logger, platform)
-                await self._close_context(context)
-                return result
-
-            # Attempt login if credentials provided
+            # Delegate to AI vision agent
+            credentials = {}
             if username and password:
-                try:
-                    login_handler = get_platform_login(platform)
-                    await login_handler.login(page, {"username": username, "password": password})
-                    await random_human_wait(2.0, 4.0)
-                except TwoFactorAuthError:
-                    result.has_2fa = True
-                    log_2fa_detected(self.logger, platform)
-                    await self._close_context(context)
-                    return result
-                except Exception as login_exc:
-                    self.logger.warning(f"Platform login failed for {platform}: {login_exc}")
-                    # Fallback to generic login attempt
-                    await self._attempt_generic_login(page, username, password, platform)
+                credentials = {"username": username, "password": password}
 
-                # Re-check 2FA after login
-                if await self._check_for_2fa(page):
-                    result.has_2fa = True
-                    log_2fa_detected(self.logger, platform)
-                    await self._close_context(context)
-                    return result
+            vision_engine = create_vision_engine()
+            agent = AiVisionAgent(
+                vision_engine=vision_engine,
+                max_steps=30,
+                screenshot_max_width=800,
+            )
 
-            # Extract cookies
-            raw_cookies = await context.cookies()
-            result.cookies = [
-                CookieData(
-                    name=cookie["name"],
-                    value=cookie["value"],
-                    domain=cookie.get("domain", ""),
-                    expires=cookie.get("expires"),
-                    secure=cookie.get("secure", True),
-                    http_only=cookie.get("httpOnly", True),
-                )
-                for cookie in raw_cookies
-            ]
-            result.success = True
+            agent_result = await agent.run_extraction(
+                page=page,
+                platform=platform,
+                credentials=credentials,
+            )
+
+            result.has_2fa = agent_result.has_2fa
+            result.has_captcha = agent_result.has_captcha
+            result.success = agent_result.success
+            result.error_message = agent_result.error_message
+            result.cookies = agent_result.cookies
 
             # Persist storage state for next run
-            profile_path = self.context_manager.ensure_profile(platform)
-            storage_state_path = profile_path / "storage_state.json"
-            try:
-                await context.storage_state(path=str(storage_state_path))
-            except Exception:
-                pass
+            if result.success and result.cookies:
+                profile_path = self.context_manager.ensure_profile(platform)
+                storage_state_path = profile_path / "storage_state.json"
+                try:
+                    await context.storage_state(path=str(storage_state_path))
+                except Exception:
+                    pass
 
             await self._close_context(context)
 
         except TwoFactorAuthError:
             result.has_2fa = True
             log_2fa_detected(self.logger, platform)
+            if context:
+                await self._close_context(context)
         except Exception as e:
             result.error_message = str(e)
             self.logger.error(f"Extraction failed: {e}")
             if context:
                 await self._close_context(context)
 
-        return result
-
-    async def _check_for_2fa(self, page: Page) -> bool:
-        """Check if the current page indicates 2FA is required."""
-        try:
-            content = (await page.content()).lower()
-            for pattern in self.TWO_FA_PATTERNS:
-                if pattern in content:
-                    self.logger.debug(f"2FA pattern detected: {pattern}")
-                    return True
-        except Exception:
-            pass
-
-        for selector in self.TWO_FA_SELECTORS:
-            try:
-                count = await page.locator(selector).count()
-                if count > 0:
-                    self.logger.debug(f"2FA selector found: {selector}")
-                    return True
-            except Exception:
-                continue
-
-        try:
-            title = (await page.title()).lower()
-            title_indicators = ["two-factor", "2fa", "authentication", "verification", "security code"]
-            for indicator in title_indicators:
-                if indicator in title:
-                    self.logger.debug(f"2FA indicator in title: {indicator}")
-                    return True
-        except Exception:
-            pass
-
-        return False
-
-    async def _attempt_generic_login(
-        self,
-        page: Page,
-        username: str,
-        password: str,
-        platform: str,
-    ) -> Dict[str, bool]:
-        """Generic fallback login attempt using common selectors."""
-        result = {"success": False, "has_2fa": False}
-
-        username_selectors = [
-            'input[name="username"]',
-            'input[name="login"]',
-            'input[name="email"]',
-            'input[type="email"]',
-            'input[id="username"]',
-            'input[id="login"]',
-        ]
-        password_selectors = [
-            'input[name="password"]',
-            'input[type="password"]',
-            'input[id="password"]',
-        ]
-        submit_selectors = [
-            'button[type="submit"]',
-            'input[type="submit"]',
-            'button:has-text("Sign in")',
-            'button:has-text("Log in")',
-            'button:has-text("Login")',
-        ]
-
-        for selector in username_selectors:
-            try:
-                if await page.locator(selector).count() > 0:
-                    await human_like_typing(page, selector, username)
-                    break
-            except Exception:
-                continue
-
-        await random_human_wait(0.5, 1.0)
-
-        for selector in password_selectors:
-            try:
-                if await page.locator(selector).count() > 0:
-                    await human_like_typing(page, selector, password)
-                    break
-            except Exception:
-                continue
-
-        await random_human_wait(0.5, 1.0)
-
-        for selector in submit_selectors:
-            try:
-                if await page.locator(selector).count() > 0:
-                    await human_like_click(page, selector)
-                    await page.wait_for_load_state("networkidle")
-                    break
-            except Exception:
-                continue
-
-        if await self._check_for_2fa(page):
-            result["has_2fa"] = True
-            return result
-
-        result["success"] = True
         return result
 
     async def validate_cookies(self, url: str, cookies: List[CookieData]) -> bool:

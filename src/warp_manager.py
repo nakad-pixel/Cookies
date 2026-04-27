@@ -36,7 +36,7 @@ class WarpManager:
     def status(self) -> WarpStatus:
         result = subprocess.run(["warp-cli", "status"], check=False, capture_output=True, text=True)
         output = result.stdout.lower()
-        connected = "connected" in output
+        connected = "connected" in output and "disconnected" not in output
         ip = None
         for line in result.stdout.splitlines():
             if "ip" in line.lower():

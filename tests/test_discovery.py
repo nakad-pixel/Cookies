@@ -140,6 +140,8 @@ class TestDiscoveryEngine:
         def side_effect(path):
             if path == "README.md":
                 return mock_readme
+            if path == "/":
+                return []
             raise Exception("not found")
 
         mock_repo.get_contents.side_effect = side_effect
@@ -162,6 +164,8 @@ class TestDiscoveryEngine:
         def side_effect(path):
             if path == "requirements.txt":
                 return mock_req
+            if path == "/":
+                return []
             raise Exception("not found")
 
         mock_repo.get_contents.side_effect = side_effect
@@ -184,6 +188,8 @@ class TestDiscoveryEngine:
         def side_effect(path):
             if path == ".env.example":
                 return mock_env
+            if path == "/":
+                return []
             raise Exception("not found")
 
         mock_repo.get_contents.side_effect = side_effect
@@ -192,3 +198,18 @@ class TestDiscoveryEngine:
         engine = DiscoveryEngine("test-token", "test-org")
         score = engine._score_repo(mock_repo)
         assert score >= 0.2
+
+    @patch("src.discovery.Github")
+    def test_score_repo_with_platform_detection(self, mock_github_class):
+        """Test scoring includes platform detection from repo name."""
+        mock_github = MagicMock()
+        mock_repo = MagicMock()
+        mock_repo.full_name = "test/linkedin-scraper"
+        mock_repo.stargazers_count = 0
+        mock_repo.get_contents.return_value = []
+
+        mock_github_class.return_value = mock_github
+
+        engine = DiscoveryEngine("test-token", "test-org")
+        score = engine._score_repo(mock_repo)
+        assert score > 0.1  # Should get platform detection bonus
