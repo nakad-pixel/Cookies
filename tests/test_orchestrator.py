@@ -38,7 +38,7 @@ class DummyConfig:
     def __init__(self):
         self.github = type('obj', (object,), {
             'api_url': 'https://api.github.com',
-            'token_env': 'GITHUB_TOKEN',
+            'token_env': 'CG_GITHUB_TOKEN',
             'org': 'test'
         })()
         self.storage = type('obj', (object,), {

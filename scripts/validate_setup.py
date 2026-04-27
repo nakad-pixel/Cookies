@@ -6,6 +6,10 @@ This script checks that all required configuration and dependencies are in place
 
 import json
 import sys
+import warnings
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import load_config, get_env_value
 
@@ -97,11 +101,21 @@ def main() -> int:
     # Check required environment variables
     print("Required Environment Variables:")
     print("-" * 40)
-    for passed, message in [
-        check_env_var("GITHUB_TOKEN", required=True),
-    ]:
-        print(f"  {message}")
-        all_passed = all_passed and passed
+    primary_passed, primary_message = check_env_var("CG_GITHUB_TOKEN", required=True)
+    print(f"  {primary_message}")
+    all_passed = all_passed and primary_passed
+
+    if not primary_passed:
+        fallback_value = get_env_value("GITHUB_TOKEN")
+        if fallback_value:
+            warnings.warn(
+                "GITHUB_TOKEN is set but CG_GITHUB_TOKEN is preferred. "
+                "GITHUB_TOKEN is a reserved secret in GitHub Actions and is repo-scoped, "
+                "so it cannot inject secrets into other repositories. "
+                "Create a personal access token and set it as CG_GITHUB_TOKEN.",
+                stacklevel=1,
+            )
+            print("  ⚠ GITHUB_TOKEN fallback detected (not recommended for cross-repo injection)")
     print()
 
     # Check optional environment variables
