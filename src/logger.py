@@ -151,3 +151,17 @@ def log_secret_injection(logger: logging.Logger, repo: str, secret_name: str) ->
         secret_name=secret_name,
         status="injected"
     )
+
+
+def log_variable_injection_warning(logger: logging.Logger, repo: str, variable_name: str) -> None:
+    """Log a prominent security warning about variable injection."""
+    log_event(
+        logger,
+        f"SECURITY WARNING: Injected variable {variable_name} to {repo}. "
+        "GitHub Variables are visible in the UI to anyone with read access. "
+        "Use Secrets for sensitive data.",
+        repository=repo,
+        variable_name=variable_name,
+        status="injected_variable",
+        severity="WARNING"
+    )

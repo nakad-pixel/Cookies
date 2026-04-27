@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import Mock, patch
 
-from src.secrets_manager import SecretsManager, PublicKey
+from src.secrets_manager import GitHubActionsManager, PublicKey, SecretsManager
 
 
 class TestPublicKey:
@@ -12,16 +12,16 @@ class TestPublicKey:
         assert key.key == "base64encodedkey"
 
 
-class TestSecretsManager:
-    def test_secrets_manager_creation(self):
-        """Test SecretsManager initialization."""
-        manager = SecretsManager("https://api.github.com", "test-token")
+class TestGitHubActionsManager:
+    def test_manager_creation(self):
+        """Test GitHubActionsManager initialization."""
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
         assert manager.github_api == "https://api.github.com"
         assert manager.token == "test-token"
 
     def test_headers_contains_auth(self):
         """Test that headers include authorization."""
-        manager = SecretsManager("https://api.github.com", "test-token")
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
         headers = manager._headers()
         assert "Authorization" in headers
         assert headers["Authorization"] == "Bearer test-token"
@@ -35,7 +35,7 @@ class TestSecretsManager:
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        manager = SecretsManager("https://api.github.com", "test-token")
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
 
         # First call should hit the API
         key1 = manager.get_public_key("owner/repo")
@@ -54,7 +54,7 @@ class TestSecretsManager:
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        manager = SecretsManager("https://api.github.com", "test-token")
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
 
         manager.get_public_key("owner/repo1")
         manager.get_public_key("owner/repo2")
@@ -70,7 +70,7 @@ class TestSecretsManager:
         private_key = public.PrivateKey.generate()
         public_key = private_key.public_key
 
-        manager = SecretsManager("https://api.github.com", "test-token")
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
         pub_key = PublicKey(key_id="123", key=base64.b64encode(bytes(public_key)).decode())
 
         encrypted1 = manager.encrypt_secret(pub_key, "secret-value")
@@ -83,9 +83,16 @@ class TestSecretsManager:
     @patch("src.secrets_manager.httpx.put")
     def test_put_secret_flow(self, mock_put, mock_get):
         """Test the full put_secret flow."""
+        import base64
+        from nacl import public
+
+        # Generate a valid 32-byte public key for testing
+        private_key = public.PrivateKey.generate()
+        valid_public_key = base64.b64encode(bytes(private_key.public_key)).decode()
+
         # Mock the public key fetch
         mock_get_response = Mock()
-        mock_get_response.json.return_value = {"key_id": "123", "key": "YWJj"}
+        mock_get_response.json.return_value = {"key_id": "123", "key": valid_public_key}
         mock_get_response.raise_for_status = Mock()
         mock_get.return_value = mock_get_response
 
@@ -94,7 +101,7 @@ class TestSecretsManager:
         mock_put_response.raise_for_status = Mock()
         mock_put.return_value = mock_put_response
 
-        manager = SecretsManager("https://api.github.com", "test-token")
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
         manager.put_secret("owner/repo", "SECRET_NAME", "secret-value")
 
         assert mock_get.called
@@ -103,3 +110,71 @@ class TestSecretsManager:
         # Verify the put was called with correct URL
         call_args = mock_put.call_args
         assert "owner/repo/actions/secrets/SECRET_NAME" in call_args[0][0]
+
+    @patch("src.secrets_manager.httpx.post")
+    def test_put_variable_flow(self, mock_post):
+        """Test the put_variable flow."""
+        mock_post_response = Mock()
+        mock_post_response.raise_for_status = Mock()
+        mock_post_response.status_code = 201
+        mock_post.return_value = mock_post_response
+
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
+        manager.put_variable("owner/repo", "VAR_NAME", "var-value")
+
+        assert mock_post.called
+        call_args = mock_post.call_args
+        assert "owner/repo/actions/variables" in call_args[0][0]
+        assert call_args[1]["json"]["name"] == "VAR_NAME"
+        assert call_args[1]["json"]["value"] == "var-value"
+
+    @patch("src.secrets_manager.httpx.post")
+    @patch("src.secrets_manager.httpx.patch")
+    def test_put_variable_updates_existing(self, mock_patch, mock_post):
+        """Test that put_variable updates existing variable on 409."""
+        mock_post_response = Mock()
+        mock_post_response.status_code = 409
+        mock_post_response.raise_for_status = Mock()
+        mock_post.return_value = mock_post_response
+
+        mock_patch_response = Mock()
+        mock_patch_response.raise_for_status = Mock()
+        mock_patch.return_value = mock_patch_response
+
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
+        manager.put_variable("owner/repo", "VAR_NAME", "updated-value")
+
+        assert mock_post.called
+        assert mock_patch.called
+
+    @patch("src.secrets_manager.httpx.delete")
+    def test_delete_variable(self, mock_delete):
+        """Test variable deletion."""
+        mock_delete_response = Mock()
+        mock_delete_response.status_code = 204
+        mock_delete_response.raise_for_status = Mock()
+        mock_delete.return_value = mock_delete_response
+
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
+        manager.delete_variable("owner/repo", "VAR_NAME")
+
+        assert mock_delete.called
+
+    @patch("src.secrets_manager.httpx.delete")
+    def test_delete_secret(self, mock_delete):
+        """Test secret deletion."""
+        mock_delete_response = Mock()
+        mock_delete_response.status_code = 204
+        mock_delete_response.raise_for_status = Mock()
+        mock_delete.return_value = mock_delete_response
+
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
+        manager.delete_secret("owner/repo", "SECRET_NAME")
+
+        assert mock_delete.called
+
+
+class TestSecretsManagerAlias:
+    def test_alias_exists(self):
+        """Test that SecretsManager is an alias for GitHubActionsManager."""
+        assert SecretsManager is GitHubActionsManager

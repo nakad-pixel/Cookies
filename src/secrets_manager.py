@@ -13,7 +13,9 @@ class PublicKey:
     key: str
 
 
-class SecretsManager:
+class GitHubActionsManager:
+    """Manages GitHub Secrets and Variables injection."""
+
     def __init__(self, github_api: str, token: str) -> None:
         self.github_api = github_api.rstrip("/")
         self.token = token
@@ -44,8 +46,35 @@ class SecretsManager:
         response = httpx.put(url, headers=self._headers(), json=payload, timeout=30)
         response.raise_for_status()
 
+    def delete_secret(self, repo: str, name: str) -> None:
+        url = f"{self.github_api}/repos/{repo}/actions/secrets/{name}"
+        response = httpx.delete(url, headers=self._headers(), timeout=30)
+        if response.status_code != 204:
+            response.raise_for_status()
+
+    def put_variable(self, repo: str, name: str, value: str) -> None:
+        """Create or update a GitHub Actions variable (unencrypted, visible in UI)."""
+        url = f"{self.github_api}/repos/{repo}/actions/variables"
+        payload = {"name": name, "value": value}
+        response = httpx.post(url, headers=self._headers(), json=payload, timeout=30)
+        if response.status_code == 409:
+            # Variable already exists — update it
+            update_url = f"{self.github_api}/repos/{repo}/actions/variables/{name}"
+            response = httpx.patch(update_url, headers=self._headers(), json=payload, timeout=30)
+        response.raise_for_status()
+
+    def delete_variable(self, repo: str, name: str) -> None:
+        url = f"{self.github_api}/repos/{repo}/actions/variables/{name}"
+        response = httpx.delete(url, headers=self._headers(), timeout=30)
+        if response.status_code != 204:
+            response.raise_for_status()
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
         }
+
+
+# Backward compatibility alias
+SecretsManager = GitHubActionsManager

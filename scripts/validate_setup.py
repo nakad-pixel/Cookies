@@ -62,6 +62,18 @@ def check_dependencies() -> list[tuple[bool, str]]:
     except ImportError:
         results.append((False, "✗ httpx not installed"))
 
+    try:
+        from PIL import Image
+        results.append((True, "✓ Pillow installed (for screenshot compression)"))
+    except ImportError:
+        results.append((False, "✗ Pillow not installed"))
+
+    try:
+        import google.generativeai
+        results.append((True, "✓ google-generativeai installed (for Gemini AI vision)"))
+    except ImportError:
+        results.append((False, "✗ google-generativeai not installed"))
+
     return results
 
 
@@ -96,7 +108,8 @@ def main() -> int:
     print("Optional Environment Variables:")
     print("-" * 40)
     for passed, message in [
-        check_env_var("GLM_API_KEY", required=False),
+        check_env_var("GEMINI_API_KEY", required=False),
+        check_env_var("OPENROUTER_API_KEY", required=False),
         check_env_var("USER_CREDENTIALS_GITHUB", required=False),
         check_env_var("USER_CREDENTIALS_GITLAB", required=False),
     ]:

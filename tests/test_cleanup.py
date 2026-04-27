@@ -35,6 +35,12 @@ class TestSecureWiper:
         assert obj.password is None
         assert obj.normal == "keep this"
 
+    def test_wipe_list_clears_strings(self):
+        """Test that wipe_list clears strings and empties the list."""
+        items = ["secret1", "secret2", "keep"]
+        SecureWiper.wipe_list(items)
+        assert len(items) == 0
+
     def test_clear_temp_files_removes_matching_files(self, tmp_path, monkeypatch):
         """Test that clear_temp_files removes matching files."""
         import tempfile

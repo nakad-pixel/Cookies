@@ -57,6 +57,14 @@ class SecureWiper:
                 setattr(obj, field, None)
 
     @staticmethod
+    def wipe_list(items: list[str]) -> None:
+        """Wipe a list of strings."""
+        for s in items:
+            if isinstance(s, str):
+                SecureWiper.wipe_string(s)
+        items.clear()
+
+    @staticmethod
     def clear_temp_files(pattern: str = "cookie_*") -> int:
         """Remove temporary files matching the pattern.
 

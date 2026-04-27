@@ -6,6 +6,8 @@ from typing import Iterable, List
 
 from github import Github
 
+from src.platform_registry import detect_platform_from_text
+
 
 COOKIE_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -49,7 +51,10 @@ class DiscoveryEngine:
         for repo in org.get_repos():
             confidence = self._score_repo(repo)
             if confidence > 0:
-                candidates.append(RepoCandidate(name=repo.full_name, url=repo.html_url, confidence=confidence))
+                candidate = RepoCandidate(name=repo.full_name, url=repo.html_url, confidence=confidence)
+                # Attach repo object for downstream analysis
+                candidate._repo_obj = repo  # type: ignore[attr-defined]
+                candidates.append(candidate)
         return sorted(candidates, key=lambda c: c.confidence, reverse=True)
 
     def _score_repo(self, repo: object) -> float:
@@ -67,13 +72,16 @@ class DiscoveryEngine:
         score += self._analyze_env_files(repo)
         score += self._analyze_workflows(repo)
 
+        # Platform detection as a major scoring factor
+        score += self._analyze_platform_detection(repo)
+
         # Stars capped at +0.2
         score += min(repo.stargazers_count / 1000, 0.2)
 
         return min(score, 1.0)
 
     def _analyze_readme(self, repo: object) -> float:
-        """Scan README.md for auth/scraper keywords."""
+        """Scan README.md for auth/scraper keywords and platform domains."""
         try:
             readme = repo.get_contents("README.md")
             if hasattr(readme, "decoded_content"):
@@ -81,14 +89,18 @@ class DiscoveryEngine:
             else:
                 return 0.0
             hits = sum(1 for kw in AUTH_KEYWORDS if kw in content)
-            return min(hits * 0.1, 0.4)
+            # Add platform detection bonus
+            platforms = detect_platform_from_text(content)
+            platform_bonus = min(len(platforms) * 0.15, 0.4)
+            return min(hits * 0.1, 0.4) + platform_bonus
         except Exception:
             return 0.0
 
     def _analyze_dependency_files(self, repo: object) -> float:
-        """Check package files for HTTP client libraries."""
-        files_to_check = ["requirements.txt", "package.json", "Cargo.toml", "go.mod"]
+        """Check package files for HTTP client libraries and platform SDKs."""
+        files_to_check = ["requirements.txt", "package.json", "Cargo.toml", "go.mod", "pyproject.toml"]
         found = 0
+        platform_sdk_found = False
         for filename in files_to_check:
             try:
                 file_content = repo.get_contents(filename)
@@ -98,9 +110,20 @@ class DiscoveryEngine:
                         if lib in content:
                             found += 1
                             break
+                    from src.platform_registry import PLATFORM_REGISTRY
+                    for meta in PLATFORM_REGISTRY.values():
+                        for pkg in meta.sdk_packages:
+                            if pkg.lower() in content:
+                                platform_sdk_found = True
+                                break
+                        if platform_sdk_found:
+                            break
             except Exception:
                 continue
-        return min(found * 0.15, 0.3)
+        score = min(found * 0.15, 0.3)
+        if platform_sdk_found:
+            score += 0.2
+        return min(score, 0.5)
 
     def _analyze_env_files(self, repo: object) -> float:
         """Check for .env.example and docker-compose.yml with auth env vars."""
@@ -139,6 +162,15 @@ class DiscoveryEngine:
         except Exception:
             pass
         return 0.0
+
+    def _analyze_platform_detection(self, repo: object) -> float:
+        """Score based on platforms detected in repo name and description."""
+        try:
+            text = f"{repo.full_name} {repo.description or ''}".lower()
+        except Exception:
+            return 0.0
+        platforms = detect_platform_from_text(text)
+        return min(len(platforms) * 0.15, 0.3)
 
 
 def score_cookie_names(names: Iterable[str]) -> float:

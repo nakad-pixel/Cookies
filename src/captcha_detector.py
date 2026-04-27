@@ -82,6 +82,7 @@ class CaptchaDetector:
         indicators = [
             "checking your browser",
             "please wait",
+            "just a moment",
             "ddos protection",
             "challenge",
             "ray id",
