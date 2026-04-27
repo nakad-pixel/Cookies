@@ -4,6 +4,11 @@
 This script tests the Cloudflare WARP connection and displays status.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from src.config import load_config
 from src.warp_manager import WarpManager
 

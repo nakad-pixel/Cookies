@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
@@ -116,7 +117,7 @@ def load_config(path: Path | None = None) -> Config:
             api_url=github.get("api_url", "https://api.github.com"),
             graphql_url=github.get("graphql_url", "https://api.github.com/graphql"),
             org=github.get("org", ""),
-            token_env=github.get("token_env", "GITHUB_TOKEN"),
+            token_env=github.get("token_env", "CG_GITHUB_TOKEN"),
         ),
         logging=LoggingConfig(
             level=str(logging_cfg.get("level", "INFO")),
@@ -179,3 +180,35 @@ def get_credentials_for_platform(platform: str, config: Config | None = None) ->
         }
     except json.JSONDecodeError:
         return None
+
+
+def get_github_token(config: Config | None = None) -> str | None:
+    """Get the GitHub token with backward compatibility.
+
+    Checks CG_GITHUB_TOKEN first, then falls back to GITHUB_TOKEN with a warning.
+
+    Args:
+        config: Optional config object
+
+    Returns:
+        The token value or None if not found
+    """
+    if config is None:
+        config = load_config()
+
+    token = get_env_value(config.github.token_env)
+    if token:
+        return token
+
+    # Backward compatibility: fallback to legacy GITHUB_TOKEN
+    fallback = get_env_value("GITHUB_TOKEN")
+    if fallback:
+        warnings.warn(
+            "GITHUB_TOKEN is deprecated. Use CG_GITHUB_TOKEN instead. "
+            "GITHUB_TOKEN is a reserved secret in GitHub Actions and is repo-scoped, "
+            "so it cannot inject secrets into other repositories.",
+            stacklevel=2,
+        )
+        return fallback
+
+    return None

@@ -63,7 +63,7 @@ def test_full_workflow_no_2fa(tmp_path):
     config = Mock(spec=Config)
     config.github = Mock()
     config.github.api_url = "https://api.github.com"
-    config.github.token_env = "GITHUB_TOKEN"
+    config.github.token_env = "CG_GITHUB_TOKEN"
     config.github.org = "test"
     config.storage = Mock()
     config.storage.database_path = str(tmp_path / "e2e.sqlite")
@@ -144,7 +144,7 @@ def test_full_workflow_with_2fa(tmp_path):
     config = Mock(spec=Config)
     config.github = Mock()
     config.github.api_url = "https://api.github.com"
-    config.github.token_env = "GITHUB_TOKEN"
+    config.github.token_env = "CG_GITHUB_TOKEN"
     config.github.org = "test"
     config.storage = Mock()
     config.storage.database_path = str(tmp_path / "e2e.sqlite")

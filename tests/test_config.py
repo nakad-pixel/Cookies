@@ -178,10 +178,10 @@ class TestConfigClasses:
             api_url="https://api.github.com",
             graphql_url="https://api.github.com/graphql",
             org="test-org",
-            token_env="GITHUB_TOKEN",
+            token_env="CG_GITHUB_TOKEN",
         )
         assert config.org == "test-org"
-        assert config.token_env == "GITHUB_TOKEN"
+        assert config.token_env == "CG_GITHUB_TOKEN"
 
     def test_storage_config_creation(self):
         """Test StorageConfig creation."""

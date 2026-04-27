@@ -54,7 +54,7 @@ jobs:
 
       - name: Run orchestrator
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CG_GITHUB_TOKEN: ${{ secrets.CG_GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # Optional: platform credentials for authenticated extraction

@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 
 from src.browser_automation import BrowserAutomation, CookieData, ExtractionResult
 from src.cleanup import SecureWiper
-from src.config import Config, get_credentials_for_platform, get_env_value, load_config
+from src.config import Config, get_credentials_for_platform, get_env_value, get_github_token, load_config
 from src.database import Database, ExtractionRecord, Repository
 from src.decision_engine import DecisionEngine
 from src.discovery import DiscoveryEngine, RepoCandidate
@@ -390,9 +390,9 @@ class Orchestrator:
 def build_orchestrator() -> Orchestrator:
     """Build and configure the orchestrator."""
     config = load_config()
-    token = get_env_value(config.github.token_env)
+    token = get_github_token(config)
     if not token:
-        raise RuntimeError("Missing GitHub token")
+        raise RuntimeError("Missing GitHub token. Set CG_GITHUB_TOKEN environment variable.")
 
     # Initialize components
     database = Database(config.storage.database_path)

@@ -43,7 +43,7 @@ patchright install chromium
 python scripts/init_db.py
 
 # Set required environment variables
-export GITHUB_TOKEN="your-github-token"
+export CG_GITHUB_TOKEN="your-github-token"
 
 # Optional: Set AI vision API keys (zero-cost free tier)
 export GEMINI_API_KEY="your-gemini-key"      # Primary - Gemini 2.0 Flash free tier
@@ -75,7 +75,7 @@ app:
 
 github:
   org: your-org-name
-  token_env: GITHUB_TOKEN
+  token_env: CG_GITHUB_TOKEN
 
 logging:
   level: INFO
@@ -141,11 +141,13 @@ Variables are named the same as secrets but are **unencrypted and visible**:
 
 Set these in your repository's GitHub Secrets:
 
-- `GITHUB_TOKEN` - GitHub API token with repo access
+- `CG_GITHUB_TOKEN` - GitHub API token with repo access. **Do not use `GITHUB_TOKEN`** — it is a reserved secret name in GitHub Actions that is auto-generated and repo-scoped, so it cannot be created manually and lacks the cross-repo permissions needed for Cookie Guardian to inject secrets into other repositories.
 - `GEMINI_API_KEY` - (Optional) Gemini 2.0 Flash free tier API key
 - `OPENROUTER_API_KEY` - (Optional) OpenRouter API key for fallback
 - `USER_CREDENTIALS_{PLATFORM}` - JSON with username/password (optional)
   - Example: `USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'`
+
+> **Note:** The default `GITHUB_TOKEN` secret provided by GitHub Actions is scoped to the current repository only and cannot write secrets to other repositories. For Cookie Guardian to work across multiple repositories, you must create a **Personal Access Token (PAT)** with `repo`, `workflow`, and `read:org` scopes, and add it as `CG_GITHUB_TOKEN` in your repository secrets.
 
 ## AI Vision Engine
 

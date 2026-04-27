@@ -14,7 +14,7 @@ github:
   api_url: https://api.github.com
   graphql_url: https://api.github.com/graphql
   org: example-org
-  token_env: GITHUB_TOKEN
+  token_env: CG_GITHUB_TOKEN
 
 logging:
   level: INFO
