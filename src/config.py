@@ -80,7 +80,35 @@ class Config:
     credentials: CredentialsConfig
 
 
-DEFAULT_CONFIG_PATH = Path("/home/engine/project/config.yaml")
+def _resolve_config_path() -> Path:
+    """Resolve config.yaml using env var, package-relative, or CWD-relative discovery."""
+    env_path = os.environ.get("COOKIE_GUARDIAN_CONFIG")
+    if env_path:
+        env_file = Path(env_path)
+        if env_file.is_file():
+            return env_file
+        raise FileNotFoundError(
+            f"COOKIE_GUARDIAN_CONFIG is set but file not found: {env_file.resolve()}\n"
+            f"Please check the path or unset the variable to use automatic discovery."
+        )
+
+    package_relative = Path(__file__).resolve().parent.parent / "config.yaml"
+    if package_relative.is_file():
+        return package_relative
+
+    cwd_relative = Path.cwd() / "config.yaml"
+    if cwd_relative.is_file():
+        return cwd_relative
+
+    raise FileNotFoundError(
+        "config.yaml not found. Searched in:\n"
+        f"  1. Package-relative: {package_relative}\n"
+        f"  2. CWD-relative:     {cwd_relative}\n"
+        "\n"
+        "To fix this:\n"
+        "  • Copy config.yaml.example to config.yaml and edit it, or\n"
+        "  • Set COOKIE_GUARDIAN_CONFIG=/path/to/config.yaml"
+    )
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -89,7 +117,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
 
 
 def load_config(path: Path | None = None) -> Config:
-    config_path = path or DEFAULT_CONFIG_PATH
+    config_path = path or _resolve_config_path()
     raw = _load_yaml(config_path)
 
     app = raw.get("app", {})

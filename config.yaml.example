@@ -1,0 +1,70 @@
+# Cookie Guardian configuration file.
+# Copy this file to config.yaml and edit the values for your environment.
+
+app:
+  # Application name (optional, default: cookie-guardian)
+  name: cookie-guardian
+  # Max concurrent browser sessions (optional, default: 3)
+  max_concurrency: 3
+  # Shard ID for distributed processing (optional, default: 0)
+  shard_id: 0
+  # Total number of shards (optional, default: 1)
+  shard_total: 3
+  # Directory for persistent browser profiles (optional, default: data/profiles)
+  profile_dir: data/profiles
+  # Max retries per operation (optional, default: 3)
+  max_retries: 3
+  # Directory for HAR archives (optional, default: data/har)
+  har_dir: data/har
+  # Directory for Playwright traces (optional, default: data/traces)
+  tracing_dir: data/traces
+  # Enable HAR recording (optional, default: false)
+  enable_har: false
+  # Enable Playwright tracing (optional, default: false)
+  enable_tracing: false
+
+github:
+  # Required: GitHub API URL (default: https://api.github.com)
+  api_url: https://api.github.com
+  # Required: GitHub GraphQL URL (default: https://api.github.com/graphql)
+  graphql_url: https://api.github.com/graphql
+  # Required: Target GitHub organization or user name
+  org: example-org
+  # Environment variable that holds the GitHub token (default: CG_GITHUB_TOKEN)
+  token_env: CG_GITHUB_TOKEN
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
+  level: INFO
+  # Output logs as JSON (default: true)
+  json: true
+
+storage:
+  # SQLite database path - metadata ONLY, no cookie values (default: data/cookie_guardian.sqlite)
+  database_path: data/cookie_guardian.sqlite
+
+ai_vision:
+  # Vision engine: gemini, openrouter, ollama, or rule (default: gemini)
+  engine: gemini
+  # Environment variable for Gemini API key (default: GEMINI_API_KEY)
+  gemini_api_key_env: GEMINI_API_KEY
+  # Environment variable for OpenRouter API key (default: OPENROUTER_API_KEY)
+  openrouter_api_key_env: OPENROUTER_API_KEY
+  # Local Ollama endpoint (default: http://localhost:11434)
+  ollama_url: http://localhost:11434
+  # Max AI vision steps per session (default: 30)
+  max_steps: 30
+  # Max screenshot width in pixels (default: 800)
+  screenshot_max_width: 800
+
+warp:
+  # Cloudflare WARP connection timeout in seconds (default: 30)
+  connect_timeout_sec: 30
+  # IP rotation interval in seconds (default: 900)
+  rotate_interval_sec: 900
+
+credentials:
+  # Prefix for platform credential environment variables.
+  # Set USER_CREDENTIALS_{PLATFORM} with JSON: {"username": "...", "password": "..."}
+  # Example: USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'
+  prefix: USER_CREDENTIALS
