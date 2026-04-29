@@ -60,6 +60,21 @@ python -m src.orchestrator
 
 Edit `config.yaml` to adjust settings:
 
+### Config Discovery Order
+
+Cookie Guardian discovers `config.yaml` automatically in the following order:
+
+1. **Environment variable override**: If `COOKIE_GUARDIAN_CONFIG` is set, that path is used exactly. If the file does not exist, the system fails fast with a clear error.
+2. **Package-relative fallback**: `config.yaml` next to the `src/` directory (i.e. the repository root when installed from source).
+3. **CWD fallback**: `./config.yaml` in the current working directory.
+
+```bash
+# Override the config path explicitly
+export COOKIE_GUARDIAN_CONFIG=/path/to/config.yaml
+```
+
+If no config is found, the error message lists every searched location and suggests copying `config.yaml.example` or setting the environment variable.
+
 ```yaml
 app:
   name: cookie-guardian

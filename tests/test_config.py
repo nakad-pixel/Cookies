@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from src.config import (
     load_config,
+    _resolve_config_path,
     get_env_value,
     get_credentials_for_platform,
     Config,
@@ -152,6 +153,67 @@ credentials:
 
         assert result is not None
         assert result["username"] == "user"
+
+
+class TestResolveConfigPath:
+    def test_env_var_override(self, tmp_path):
+        """COOKIE_GUARDIAN_CONFIG overrides everything when the file exists."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("app:\n  name: env-override\n")
+        with patch.dict("os.environ", {"COOKIE_GUARDIAN_CONFIG": str(config_path)}):
+            resolved = _resolve_config_path()
+        assert resolved == config_path
+
+    def test_env_var_missing_raises(self, tmp_path):
+        """If COOKIE_GUARDIAN_CONFIG points to a missing file, fail fast."""
+        missing = tmp_path / "missing.yaml"
+        with patch.dict("os.environ", {"COOKIE_GUARDIAN_CONFIG": str(missing)}):
+            with pytest.raises(FileNotFoundError) as exc_info:
+                _resolve_config_path()
+        assert "COOKIE_GUARDIAN_CONFIG is set but file not found" in str(exc_info.value)
+
+    def test_package_relative_fallback(self, tmp_path, monkeypatch):
+        """When env var is absent and package-relative config exists, use it."""
+        fake_package = tmp_path / "src" / "config.py"
+        fake_package.parent.mkdir(parents=True)
+        fake_package.write_text("")
+        pkg_config = tmp_path / "config.yaml"
+        pkg_config.write_text("app:\n  name: pkg-relative\n")
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("src.config.__file__", str(fake_package)):
+                resolved = _resolve_config_path()
+        assert resolved == pkg_config
+
+    def test_cwd_fallback(self, tmp_path, monkeypatch):
+        """When package-relative is missing and CWD config exists, use it."""
+        fake_package = tmp_path / "src" / "config.py"
+        fake_package.parent.mkdir(parents=True)
+        fake_package.write_text("")
+        cwd_config = tmp_path / "config.yaml"
+        cwd_config.write_text("app:\n  name: cwd-fallback\n")
+
+        monkeypatch.chdir(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("src.config.__file__", str(fake_package)):
+                resolved = _resolve_config_path()
+        assert resolved == cwd_config
+
+    def test_missing_config_error_message(self, tmp_path, monkeypatch):
+        """When no config is found anywhere, raise with actionable message."""
+        fake_package = tmp_path / "src" / "config.py"
+        fake_package.parent.mkdir(parents=True)
+        fake_package.write_text("")
+
+        monkeypatch.chdir(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("src.config.__file__", str(fake_package)):
+                with pytest.raises(FileNotFoundError) as exc_info:
+                    _resolve_config_path()
+        msg = str(exc_info.value)
+        assert "config.yaml not found" in msg
+        assert "config.yaml.example" in msg
+        assert "COOKIE_GUARDIAN_CONFIG" in msg
 
 
 class TestConfigClasses:

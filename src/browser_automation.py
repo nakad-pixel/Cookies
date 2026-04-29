@@ -134,7 +134,7 @@ class BrowserAutomation:
         return context
 
     async def _close_context(self, context: BrowserContext) -> None:
-        if hasattr(context, "_cg_trace_path"):
+        if getattr(context, "_cg_trace_path", None):
             try:
                 await context.tracing.stop(path=context._cg_trace_path)  # type: ignore[attr-defined]
             except Exception:
