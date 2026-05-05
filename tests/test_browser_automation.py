@@ -89,6 +89,7 @@ class TestBrowserAutomationAsync:
         mock_context.tracing = MagicMock()
         mock_context.tracing.start = AsyncMock()
         mock_context.tracing.stop = AsyncMock()
+        mock_context.storage_state = AsyncMock()
 
         mock_browser.new_context = AsyncMock(return_value=mock_context)
         mock_pw.chromium = MagicMock()
@@ -113,6 +114,33 @@ class TestBrowserAutomationAsync:
             "CaptchaDetector",
             MagicMock(detect_any=AsyncMock(return_value=MagicMock(present=False))),
         )
+        monkeypatch.setattr(
+            browser_automation,
+            "emulate_scroll",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            browser_automation,
+            "random_human_wait",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            browser_automation,
+            "HeaderFingerprinter",
+            MagicMock(return_value=MagicMock(get_random_headers=lambda platform: {})),
+        )
+
+        # Mock page methods used by AiVisionAgent
+        mock_page.url = "https://example.com"
+        mock_page.title = AsyncMock(return_value="Example")
+        mock_page.content = AsyncMock(return_value="<html></html>")
+        mock_page.screenshot = AsyncMock(return_value=b"fake")
+        mock_page.set_extra_http_headers = AsyncMock()
+        mock_page.goto = AsyncMock()
+        mock_page.evaluate = AsyncMock(return_value={"x": 0, "y": 0})
+        mock_page.mouse = MagicMock()
+        mock_page.mouse.move = AsyncMock()
+        mock_page.wait_for_load_state = AsyncMock()
 
         # Mock AI vision agent
         mock_agent_result = ExtractionResult(
@@ -232,6 +260,8 @@ class TestBrowserAutomationAsync:
         mock_context.new_page = AsyncMock(return_value=mock_page)
         mock_context.add_cookies = AsyncMock()
         mock_context.close = AsyncMock()
+        mock_context.add_init_script = AsyncMock()
+        mock_context._cg_trace_path = None
         mock_browser.new_context = AsyncMock(return_value=mock_context)
         mock_pw.chromium = MagicMock()
         mock_pw.chromium.launch = AsyncMock(return_value=mock_browser)
@@ -249,6 +279,11 @@ class TestBrowserAutomationAsync:
                 timezone="UTC",
                 color_scheme="light",
             ),
+        )
+        monkeypatch.setattr(
+            browser_automation,
+            "HeaderFingerprinter",
+            MagicMock(return_value=MagicMock(get_random_headers=lambda platform: {})),
         )
 
         cookies = [CookieData(name="session", value="abc", domain=".example.com")]

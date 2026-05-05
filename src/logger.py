@@ -93,7 +93,12 @@ class JsonFormatter(logging.Formatter):
         return json_str
 
 
-def setup_logger(name: str, level: str = "INFO", json_output: bool = True) -> logging.Logger:
+def setup_logger(
+    name: str,
+    level: str = "INFO",
+    json_output: bool = True,
+    log_file: str | None = None,
+) -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:
         return logger
@@ -104,6 +109,16 @@ def setup_logger(name: str, level: str = "INFO", json_output: bool = True) -> lo
     else:
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(handler)
+    if log_file:
+        import os
+
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        file_handler = logging.FileHandler(log_file)
+        if json_output:
+            file_handler.setFormatter(JsonFormatter())
+        else:
+            file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(file_handler)
     logger.propagate = False
     return logger
 

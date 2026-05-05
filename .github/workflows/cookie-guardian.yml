@@ -40,17 +40,18 @@ jobs:
           patchright install chromium
 
       - name: Create data directories
-        run: mkdir -p data/profiles data/har data/traces
+        run: mkdir -p data/profiles data/har data/traces logs
 
       - name: Initialize database
         run: python scripts/init_db.py
 
       - name: Connect WARP
+        continue-on-error: true
         run: |
-          warp-cli register
-          warp-cli connect
+          warp-cli registration new --accept-tos
+          warp-cli connect --accept-tos
           sleep 5
-          warp-cli status
+          warp-cli status --accept-tos
 
       - name: Run orchestrator
         env:
@@ -63,7 +64,7 @@ jobs:
 
       - name: Disconnect WARP
         if: always()
-        run: warp-cli disconnect || true
+        run: warp-cli disconnect --accept-tos || true
 
       - name: Redact logs before upload
         if: always()
