@@ -262,3 +262,52 @@ async def test_orchestrator_dual_injection(tmp_path):
 
     assert injected["secret"] is True
     assert injected["variable"] is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_runs_when_warp_rotation_fails(tmp_path):
+    """Test that the orchestrator completes when WARP rotation raises."""
+    db = Database(str(tmp_path / "test.sqlite"))
+    config = DummyConfig()
+
+    candidate = RepoCandidate(name="test/repo", url="https://github.com/test/repo", confidence=0.9)
+
+    class SingleDiscovery:
+        def discover(self):
+            return [candidate]
+
+    class FailingWarpManager:
+        async def rotate_ip_async(self):
+            raise RuntimeError("WARP is not available")
+
+    orchestrator = Orchestrator(
+        OrchestratorContext(
+            config=config,
+            database=db,
+            discovery=SingleDiscovery(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
+            secrets=DummySecrets(),
+            warp=FailingWarpManager(),
+        )
+    )
+
+    async def mock_extract(candidate, platform):
+        return ExtractionResult(
+            cookies=[CookieData(name="session", value="abc", domain=".github.com")],
+            success=True,
+        )
+
+    async def mock_cleanup(candidate, platform, result, repo_id):
+        pass
+
+    async def mock_inject(candidate, platform, cookies):
+        pass
+
+    orchestrator._extract_cookies = mock_extract
+    orchestrator._cleanup_repo_platform = mock_cleanup
+    orchestrator._inject_cookies = mock_inject
+
+    await orchestrator.run()
+    # Orchestrator transitions to COMPLETED then to IDLE in finally block
+    assert db.get_state() in ("COMPLETED", "IDLE")

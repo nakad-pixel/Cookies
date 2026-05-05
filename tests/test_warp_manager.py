@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
-from src.warp_manager import WarpManager, WarpStatus
+from src.warp_manager import WarpCliError, WarpManager, WarpStatus
 
 
 class TestWarpStatus:
@@ -23,6 +23,12 @@ class TestWarpManager:
         """Test WarpManager initialization."""
         manager = WarpManager(connect_timeout_sec=30)
         assert manager.connect_timeout_sec == 30
+        assert manager.accept_tos is False
+
+    def test_warp_manager_creation_with_accept_tos(self):
+        """Test WarpManager initialization with accept_tos."""
+        manager = WarpManager(accept_tos=True)
+        assert manager.accept_tos is True
 
     @patch("src.warp_manager.subprocess.run")
     def test_connect_runs_warp_cli(self, mock_run):
@@ -44,6 +50,96 @@ class TestWarpManager:
         manager.disconnect()
 
         mock_run.assert_called_with(["warp-cli", "disconnect"], check=True)
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_register_runs_warp_cli_registration_new(self, mock_run):
+        """Test that register runs warp-cli registration new."""
+        mock_run.return_value = Mock()
+
+        manager = WarpManager()
+        manager.register()
+
+        mock_run.assert_called_with(["warp-cli", "registration", "new"], check=True)
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_register_with_accept_tos(self, mock_run):
+        """Test that register appends --accept-tos when enabled."""
+        mock_run.return_value = Mock()
+
+        manager = WarpManager(accept_tos=True)
+        manager.register()
+
+        mock_run.assert_called_with(
+            ["warp-cli", "registration", "new", "--accept-tos"], check=True
+        )
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_connect_with_accept_tos(self, mock_run):
+        """Test that connect appends --accept-tos when enabled."""
+        mock_run.return_value = Mock()
+
+        with patch.object(WarpManager, "_wait_for_connection"):
+            manager = WarpManager(accept_tos=True)
+            manager.connect()
+
+        mock_run.assert_called_with(
+            ["warp-cli", "connect", "--accept-tos"], check=True
+        )
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_disconnect_with_accept_tos(self, mock_run):
+        """Test that disconnect appends --accept-tos when enabled."""
+        mock_run.return_value = Mock()
+
+        manager = WarpManager(accept_tos=True)
+        manager.disconnect()
+
+        mock_run.assert_called_with(
+            ["warp-cli", "disconnect", "--accept-tos"], check=True
+        )
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_status_with_accept_tos(self, mock_run):
+        """Test that status appends --accept-tos when enabled."""
+        mock_result = Mock()
+        mock_result.stdout = "Status: Connected\nIP: 1.2.3.4"
+        mock_result.returncode = 0
+        mock_run.return_value = mock_result
+
+        manager = WarpManager(accept_tos=True)
+        status = manager.status()
+
+        mock_run.assert_called_with(
+            ["warp-cli", "status", "--accept-tos"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert status.connected is True
+        assert status.ip == "1.2.3.4"
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_connect_graceful_when_cli_missing(self, mock_run):
+        """Test that connect raises WarpCliError when warp-cli is missing."""
+        from tenacity import RetryError
+
+        mock_run.side_effect = FileNotFoundError("No such file or directory")
+
+        with patch.object(WarpManager, "_wait_for_connection"):
+            manager = WarpManager()
+            with pytest.raises(RetryError):
+                manager.connect()
+
+        assert mock_run.call_count > 1
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_register_graceful_when_cli_missing(self, mock_run):
+        """Test that register raises WarpCliError when warp-cli is missing."""
+        mock_run.side_effect = FileNotFoundError("No such file or directory")
+
+        manager = WarpManager()
+        with pytest.raises(WarpCliError, match="warp-cli is not installed or not in PATH"):
+            manager.register()
 
     @patch("src.warp_manager.subprocess.run")
     @patch("src.warp_manager.time.sleep")

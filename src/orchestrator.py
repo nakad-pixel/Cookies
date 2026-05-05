@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Tuple
@@ -61,7 +62,10 @@ class Orchestrator:
 
     def __init__(self, context: OrchestratorContext) -> None:
         self.context = context
-        self.logger = setup_logger("cookie-guardian")
+        self.logger = setup_logger(
+            "cookie-guardian",
+            log_file=os.environ.get("CG_LOG_FILE"),
+        )
         self._extracted_cookies: List[CookieData] = []  # Track for cleanup
 
     async def run(self) -> None:

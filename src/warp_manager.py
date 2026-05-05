@@ -15,18 +15,36 @@ class WarpStatus:
     ip: str | None
 
 
+class WarpCliError(RuntimeError):
+    """Raised when the WARP CLI is unavailable or returns an error."""
+
+
 class WarpManager:
-    def __init__(self, connect_timeout_sec: int = 30) -> None:
+    def __init__(self, connect_timeout_sec: int = 30, accept_tos: bool = False) -> None:
         self.connect_timeout_sec = connect_timeout_sec
+        self.accept_tos = accept_tos
+
+    def _run(self, cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        """Run a warp-cli command, optionally appending --accept-tos."""
+        full_cmd = list(cmd)
+        if self.accept_tos:
+            full_cmd.append("--accept-tos")
+        try:
+            return subprocess.run(full_cmd, **kwargs)
+        except FileNotFoundError as exc:
+            raise WarpCliError("warp-cli is not installed or not in PATH") from exc
+
+    def register(self) -> None:
+        self._run(["warp-cli", "registration", "new"], check=True)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     def connect(self) -> None:
-        subprocess.run(["warp-cli", "connect"], check=True)
+        self._run(["warp-cli", "connect"], check=True)
         self._wait_for_connection()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     def disconnect(self) -> None:
-        subprocess.run(["warp-cli", "disconnect"], check=True)
+        self._run(["warp-cli", "disconnect"], check=True)
 
     def rotate_ip(self) -> None:
         self.disconnect()
@@ -34,7 +52,7 @@ class WarpManager:
         self.connect()
 
     def status(self) -> WarpStatus:
-        result = subprocess.run(["warp-cli", "status"], check=False, capture_output=True, text=True)
+        result = self._run(["warp-cli", "status"], check=False, capture_output=True, text=True)
         output = result.stdout.lower()
         connected = "connected" in output and "disconnected" not in output
         ip = None
