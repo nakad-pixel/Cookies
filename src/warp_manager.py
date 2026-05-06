@@ -25,10 +25,11 @@ class WarpManager:
         self.accept_tos = accept_tos
 
     def _run(self, cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-        """Run a warp-cli command, optionally appending --accept-tos."""
+        """Run a warp-cli command, optionally inserting --accept-tos after the binary."""
         full_cmd = list(cmd)
-        if self.accept_tos:
-            full_cmd.append("--accept-tos")
+        if self.accept_tos and len(full_cmd) > 0:
+            # Insert --accept-tos immediately after the 'warp-cli' binary (index 1)
+            full_cmd.insert(1, "--accept-tos")
         try:
             return subprocess.run(full_cmd, **kwargs)
         except FileNotFoundError as exc:
@@ -36,6 +37,9 @@ class WarpManager:
 
     def register(self) -> None:
         self._run(["warp-cli", "registration", "new"], check=True)
+
+    def mode_proxy(self) -> None:
+        self._run(["warp-cli", "mode", "proxy"], check=True)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     def connect(self) -> None:
@@ -75,6 +79,10 @@ class WarpManager:
     async def connect_async(self) -> None:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self.connect)
+
+    async def mode_proxy_async(self) -> None:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.mode_proxy)
 
     async def disconnect_async(self) -> None:
         loop = asyncio.get_event_loop()

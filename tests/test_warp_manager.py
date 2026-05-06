@@ -63,19 +63,41 @@ class TestWarpManager:
 
     @patch("src.warp_manager.subprocess.run")
     def test_register_with_accept_tos(self, mock_run):
-        """Test that register appends --accept-tos when enabled."""
+        """Test that register inserts --accept-tos when enabled."""
         mock_run.return_value = Mock()
 
         manager = WarpManager(accept_tos=True)
         manager.register()
 
         mock_run.assert_called_with(
-            ["warp-cli", "registration", "new", "--accept-tos"], check=True
+            ["warp-cli", "--accept-tos", "registration", "new"], check=True
+        )
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_mode_proxy_runs_correctly(self, mock_run):
+        """Test that mode_proxy runs warp-cli mode proxy."""
+        mock_run.return_value = Mock()
+
+        manager = WarpManager()
+        manager.mode_proxy()
+
+        mock_run.assert_called_with(["warp-cli", "mode", "proxy"], check=True)
+
+    @patch("src.warp_manager.subprocess.run")
+    def test_mode_proxy_with_accept_tos(self, mock_run):
+        """Test that mode_proxy inserts --accept-tos when enabled."""
+        mock_run.return_value = Mock()
+
+        manager = WarpManager(accept_tos=True)
+        manager.mode_proxy()
+
+        mock_run.assert_called_with(
+            ["warp-cli", "--accept-tos", "mode", "proxy"], check=True
         )
 
     @patch("src.warp_manager.subprocess.run")
     def test_connect_with_accept_tos(self, mock_run):
-        """Test that connect appends --accept-tos when enabled."""
+        """Test that connect inserts --accept-tos when enabled."""
         mock_run.return_value = Mock()
 
         with patch.object(WarpManager, "_wait_for_connection"):
@@ -83,24 +105,24 @@ class TestWarpManager:
             manager.connect()
 
         mock_run.assert_called_with(
-            ["warp-cli", "connect", "--accept-tos"], check=True
+            ["warp-cli", "--accept-tos", "connect"], check=True
         )
 
     @patch("src.warp_manager.subprocess.run")
     def test_disconnect_with_accept_tos(self, mock_run):
-        """Test that disconnect appends --accept-tos when enabled."""
+        """Test that disconnect inserts --accept-tos when enabled."""
         mock_run.return_value = Mock()
 
         manager = WarpManager(accept_tos=True)
         manager.disconnect()
 
         mock_run.assert_called_with(
-            ["warp-cli", "disconnect", "--accept-tos"], check=True
+            ["warp-cli", "--accept-tos", "disconnect"], check=True
         )
 
     @patch("src.warp_manager.subprocess.run")
     def test_status_with_accept_tos(self, mock_run):
-        """Test that status appends --accept-tos when enabled."""
+        """Test that status inserts --accept-tos when enabled."""
         mock_result = Mock()
         mock_result.stdout = "Status: Connected\nIP: 1.2.3.4"
         mock_result.returncode = 0
@@ -110,7 +132,7 @@ class TestWarpManager:
         status = manager.status()
 
         mock_run.assert_called_with(
-            ["warp-cli", "status", "--accept-tos"],
+            ["warp-cli", "--accept-tos", "status"],
             check=False,
             capture_output=True,
             text=True,
@@ -256,6 +278,14 @@ class TestWarpManagerAsync:
         manager.connect = Mock()
         await manager.connect_async()
         manager.connect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mode_proxy_async(self):
+        """Test async mode_proxy wrapper."""
+        manager = WarpManager()
+        manager.mode_proxy = Mock()
+        await manager.mode_proxy_async()
+        manager.mode_proxy.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_disconnect_async(self):
