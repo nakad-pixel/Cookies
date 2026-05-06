@@ -48,10 +48,11 @@ jobs:
       - name: Connect WARP
         continue-on-error: true
         run: |
-          warp-cli registration new --accept-tos
-          warp-cli connect --accept-tos
-          sleep 5
-          warp-cli status --accept-tos
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos connect
+          sleep 2
+          warp-cli --accept-tos status
 
       - name: Run orchestrator
         env:
@@ -64,7 +65,7 @@ jobs:
 
       - name: Disconnect WARP
         if: always()
-        run: warp-cli disconnect --accept-tos || true
+        run: warp-cli --accept-tos disconnect || true
 
       - name: Redact logs before upload
         if: always()
