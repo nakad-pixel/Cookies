@@ -64,7 +64,12 @@ warp:
   rotate_interval_sec: 900
 
 credentials:
-  # Prefix for platform credential environment variables.
-  # Set USER_CREDENTIALS_{PLATFORM} with JSON: {"username": "...", "password": "..."}
-  # Example: USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'
+  # Prefix for legacy per-platform credential environment variables.
+  # Example: USER_CREDENTIALS_GITHUB='{"username":"user","password":"pass"}'
   prefix: USER_CREDENTIALS
+
+  # Alternatively, use a single unified env var:
+  # export USER_CREDENTIALS='{
+  #   "github": {"username":"user","password":"pass"},
+  #   "twitter": {"username":"email","password":"pass"}
+  # }'

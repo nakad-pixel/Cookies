@@ -7,7 +7,7 @@ from src.database import Database
 from src.decision_engine import Decision
 from src.discovery import RepoCandidate
 from src.orchestrator import Orchestrator, OrchestratorContext, State, build_orchestrator
-from src.config import Config
+from src.config import Config, get_credentials_for_platform
 from src.repo_analyzer import TargetPlatform
 
 
@@ -311,3 +311,58 @@ async def test_orchestrator_runs_when_warp_rotation_fails(tmp_path):
     await orchestrator.run()
     # Orchestrator transitions to COMPLETED then to IDLE in finally block
     assert db.get_state() in ("COMPLETED", "IDLE")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_uses_unified_credentials(tmp_path):
+    """Mock get_credentials_for_platform to verify it's called correctly."""
+    db = Database(str(tmp_path / "test.sqlite"))
+    config = DummyConfig()
+
+    candidate = RepoCandidate(name="test/repo", url="https://github.com/test/repo", confidence=0.9)
+
+    class SingleDiscovery:
+        def discover(self):
+            return [candidate]
+
+    call_log = []
+
+    def mock_get_credentials(platform, cfg=None):
+        call_log.append(platform)
+        return {"username": "testuser", "password": "testpass"}
+
+    with patch("src.orchestrator.get_credentials_for_platform", mock_get_credentials):
+        with patch("src.orchestrator.BrowserAutomation") as MockBrowser:
+            MockBrowser.return_value.extract_cookies = AsyncMock(
+                return_value=ExtractionResult(
+                    cookies=[CookieData(name="session", value="abc", domain=".github.com")],
+                    success=True,
+                )
+            )
+            with patch("src.orchestrator.RetryManager") as MockRetry:
+                # Make retry decorator pass through directly
+                MockRetry.return_value.retry_with_warp_rotation = lambda warp, exceptions: (lambda f: f)
+
+                orchestrator = Orchestrator(
+                    OrchestratorContext(
+                        config=config,
+                        database=db,
+                        discovery=SingleDiscovery(),
+                        decision_engine=DummyDecisionEngine(),
+                        repo_analyzer=DummyRepoAnalyzer(),
+                        secrets=DummySecrets(),
+                    )
+                )
+
+                async def mock_cleanup(candidate, platform, result, repo_id):
+                    pass
+
+                async def mock_inject(candidate, platform, cookies):
+                    pass
+
+                orchestrator._cleanup_repo_platform = mock_cleanup
+                orchestrator._inject_cookies = mock_inject
+
+                await orchestrator.run()
+
+    assert "github" in call_log

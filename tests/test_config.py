@@ -154,6 +154,72 @@ credentials:
         assert result is not None
         assert result["username"] == "user"
 
+    def test_get_credentials_unified_json_success(self):
+        """Set USER_CREDENTIALS env var with valid JSON, assert correct lookup for multiple platforms."""
+        unified = '{"github": {"username": "ghuser", "password": "ghpass"}, "twitter": {"username": "twuser", "password": "twpass"}}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS": unified}, clear=True):
+            gh = get_credentials_for_platform("github")
+            tw = get_credentials_for_platform("twitter")
+
+        assert gh is not None
+        assert gh["username"] == "ghuser"
+        assert gh["password"] == "ghpass"
+        assert tw is not None
+        assert tw["username"] == "twuser"
+        assert tw["password"] == "twpass"
+
+    def test_get_credentials_unified_json_missing_platform(self):
+        """Set USER_CREDENTIALS with JSON that doesn't contain the requested platform, assert fallback to per-platform env var works."""
+        unified = '{"github": {"username": "ghuser", "password": "ghpass"}}'
+        legacy = '{"username": "legacyuser", "password": "legacypass"}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS": unified, "USER_CREDENTIALS_TWITTER": legacy}, clear=True):
+            result = get_credentials_for_platform("twitter")
+
+        assert result is not None
+        assert result["username"] == "legacyuser"
+        assert result["password"] == "legacypass"
+
+    def test_get_credentials_unified_json_malformed(self):
+        """Set USER_CREDENTIALS to invalid JSON, assert fallback to per-platform env var works."""
+        legacy = '{"username": "legacyuser", "password": "legacypass"}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS": "not json", "USER_CREDENTIALS_GITHUB": legacy}, clear=True):
+            result = get_credentials_for_platform("github")
+
+        assert result is not None
+        assert result["username"] == "legacyuser"
+        assert result["password"] == "legacypass"
+
+    def test_get_credentials_unified_json_not_dict(self):
+        """Set USER_CREDENTIALS to a JSON array/string, assert fallback works."""
+        legacy = '{"username": "legacyuser", "password": "legacypass"}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS": "[1, 2, 3]", "USER_CREDENTIALS_GITHUB": legacy}, clear=True):
+            result = get_credentials_for_platform("github")
+
+        assert result is not None
+        assert result["username"] == "legacyuser"
+        assert result["password"] == "legacypass"
+
+    def test_get_credentials_legacy_still_works(self):
+        """Ensure USER_CREDENTIALS_GITHUB still works when USER_CREDENTIALS is not set."""
+        legacy = '{"username": "legacyuser", "password": "legacypass"}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS_GITHUB": legacy}, clear=True):
+            result = get_credentials_for_platform("github")
+
+        assert result is not None
+        assert result["username"] == "legacyuser"
+        assert result["password"] == "legacypass"
+
+    def test_get_credentials_unified_takes_precedence(self):
+        """Set both USER_CREDENTIALS and USER_CREDENTIALS_GITHUB with different values, assert unified takes precedence."""
+        unified = '{"github": {"username": "unifieduser", "password": "unifiedpass"}}'
+        legacy = '{"username": "legacyuser", "password": "legacypass"}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS": unified, "USER_CREDENTIALS_GITHUB": legacy}, clear=True):
+            result = get_credentials_for_platform("github")
+
+        assert result is not None
+        assert result["username"] == "unifieduser"
+        assert result["password"] == "unifiedpass"
+
 
 class TestResolveConfigPath:
     def test_env_var_override(self, tmp_path):
