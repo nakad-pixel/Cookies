@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import warnings
 from dataclasses import dataclass
@@ -181,7 +182,8 @@ def get_env_value(env_key: str, default: str | None = None) -> str | None:
 def get_credentials_for_platform(platform: str, config: Config | None = None) -> Dict[str, str] | None:
     """Get credentials for a platform from environment variables.
 
-    Looks for USER_CREDENTIALS_{PLATFORM} environment variable containing JSON.
+    First checks USER_CREDENTIALS env var for a unified JSON object mapping
+    platform names to credential dicts. Falls back to USER_CREDENTIALS_{PLATFORM}.
 
     Args:
         platform: The platform name (e.g., "github", "gitlab")
@@ -193,19 +195,26 @@ def get_credentials_for_platform(platform: str, config: Config | None = None) ->
     if config is None:
         config = load_config()
 
+    # Try unified credentials first
+    unified_json = get_env_value("USER_CREDENTIALS")
+    if unified_json:
+        try:
+            creds_map = json.loads(unified_json)
+            if isinstance(creds_map, dict) and platform.lower() in creds_map:
+                entry = creds_map[platform.lower()]
+                return {"username": entry.get("username", ""), "password": entry.get("password", "")}
+        except json.JSONDecodeError:
+            pass
+
+    # Fall back to per-platform env var
     env_var = f"{config.credentials.prefix}_{platform.upper()}"
     credentials_json = get_env_value(env_var)
-
     if not credentials_json:
         return None
 
     try:
-        import json
         creds = json.loads(credentials_json)
-        return {
-            "username": creds.get("username", ""),
-            "password": creds.get("password", ""),
-        }
+        return {"username": creds.get("username", ""), "password": creds.get("password", "")}
     except json.JSONDecodeError:
         return None
 

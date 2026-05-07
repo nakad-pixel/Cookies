@@ -59,8 +59,8 @@ jobs:
           CG_GITHUB_TOKEN: ${{ secrets.CG_GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          # Optional: platform credentials for authenticated extraction
-          USER_CREDENTIALS_GITHUB: ${{ secrets.USER_CREDENTIALS_GITHUB }}
+          # Optional: unified platform credentials (falls back to USER_CREDENTIALS_{PLATFORM})
+          USER_CREDENTIALS: ${{ secrets.USER_CREDENTIALS }}
         run: python -m src.orchestrator 2>&1 | tee logs/run.log
 
       - name: Disconnect WARP

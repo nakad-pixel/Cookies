@@ -49,8 +49,14 @@ export CG_GITHUB_TOKEN="your-github-token"
 export GEMINI_API_KEY="your-gemini-key"      # Primary - Gemini 2.0 Flash free tier
 export OPENROUTER_API_KEY="your-openrouter-key"  # Fallback
 
-# Optional: Set credentials for authenticated platforms
-export USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'
+# Optional: Set unified credentials for all authenticated platforms
+export USER_CREDENTIALS='{
+  "github": {"username": "user", "password": "pass"},
+  "twitter": {"username": "email@example.com", "password": "pass"}
+}'
+
+# Legacy per-platform env vars still work as fallback:
+# export USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'
 
 # Run the orchestrator
 python -m src.orchestrator
@@ -159,7 +165,10 @@ Set these in your repository's GitHub Secrets:
 - `CG_GITHUB_TOKEN` - GitHub API token with repo access. **Do not use `GITHUB_TOKEN`** — it is a reserved secret name in GitHub Actions that is auto-generated and repo-scoped, so it cannot be created manually and lacks the cross-repo permissions needed for Cookie Guardian to inject secrets into other repositories.
 - `GEMINI_API_KEY` - (Optional) Gemini 2.0 Flash free tier API key
 - `OPENROUTER_API_KEY` - (Optional) OpenRouter API key for fallback
-- `USER_CREDENTIALS_{PLATFORM}` - JSON with username/password (optional)
+- `USER_CREDENTIALS` - Unified JSON mapping platform names to credential dicts (optional, recommended)
+  - Example: `USER_CREDENTIALS='{"github": {"username": "user", "password": "pass"}, "twitter": {"username": "email", "password": "pass"}}'`
+  - Falls back to legacy `USER_CREDENTIALS_{PLATFORM}` if not set or platform not found
+- `USER_CREDENTIALS_{PLATFORM}` - Legacy per-platform JSON with username/password (optional, still supported)
   - Example: `USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'`
 
 > **Note:** The default `GITHUB_TOKEN` secret provided by GitHub Actions is scoped to the current repository only and cannot write secrets to other repositories. For Cookie Guardian to work across multiple repositories, you must create a **Personal Access Token (PAT)** with `repo`, `workflow`, and `read:org` scopes, and add it as `CG_GITHUB_TOKEN` in your repository secrets.
