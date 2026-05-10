@@ -68,6 +68,8 @@ class CredentialsConfig:
     Example: USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'
     """
     prefix: str = "USER_CREDENTIALS"
+    fallback_username_env: str = "CG_FALLBACK_USERNAME"
+    fallback_password_env: str = "CG_FALLBACK_PASSWORD"
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,8 @@ def load_config(path: Path | None = None) -> Config:
         ),
         credentials=CredentialsConfig(
             prefix=credentials.get("prefix", "USER_CREDENTIALS"),
+            fallback_username_env=credentials.get("fallback_username_env", "CG_FALLBACK_USERNAME"),
+            fallback_password_env=credentials.get("fallback_password_env", "CG_FALLBACK_PASSWORD"),
         ),
     )
 
@@ -179,44 +183,64 @@ def get_env_value(env_key: str, default: str | None = None) -> str | None:
     return value if value not in ("", None) else default
 
 
-def get_credentials_for_platform(platform: str, config: Config | None = None) -> Dict[str, str] | None:
+def get_credentials_for_platform(platform: str, config: Config | None = None) -> tuple[Dict[str, str], str] | None:
     """Get credentials for a platform from environment variables.
 
-    First checks USER_CREDENTIALS env var for a unified JSON object mapping
-    platform names to credential dicts. Falls back to USER_CREDENTIALS_{PLATFORM}.
+    Priority chain:
+    1. USER_CREDENTIALS env var -> JSON dict -> platform key
+    2. USER_CREDENTIALS env var -> JSON dict -> "default" key
+    3. USER_CREDENTIALS_{PLATFORM} legacy env var
+    4. CG_FALLBACK_USERNAME + CG_FALLBACK_PASSWORD env vars
+    5. Return None if all fail
 
     Args:
         platform: The platform name (e.g., "github", "gitlab")
         config: Optional config object
 
     Returns:
-        Dict with 'username' and 'password' or None if not found
+        Tuple of (credentials_dict, source_str) or None if not found
     """
     if config is None:
         config = load_config()
 
-    # Try unified credentials first
+    # 1. Try unified credentials - platform-specific key
     unified_json = get_env_value("USER_CREDENTIALS")
     if unified_json:
         try:
             creds_map = json.loads(unified_json)
             if isinstance(creds_map, dict) and platform.lower() in creds_map:
                 entry = creds_map[platform.lower()]
-                return {"username": entry.get("username", ""), "password": entry.get("password", "")}
+                return {"username": entry.get("username", ""), "password": entry.get("password", "")}, "unified"
         except json.JSONDecodeError:
             pass
 
-    # Fall back to per-platform env var
+    # 2. Try unified credentials - default key
+    if unified_json:
+        try:
+            creds_map = json.loads(unified_json)
+            if isinstance(creds_map, dict) and "default" in creds_map:
+                entry = creds_map["default"]
+                return {"username": entry.get("username", ""), "password": entry.get("password", "")}, "default"
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Fall back to per-platform env var
     env_var = f"{config.credentials.prefix}_{platform.upper()}"
     credentials_json = get_env_value(env_var)
-    if not credentials_json:
-        return None
+    if credentials_json:
+        try:
+            creds = json.loads(credentials_json)
+            return {"username": creds.get("username", ""), "password": creds.get("password", "")}, "legacy"
+        except json.JSONDecodeError:
+            pass
 
-    try:
-        creds = json.loads(credentials_json)
-        return {"username": creds.get("username", ""), "password": creds.get("password", "")}
-    except json.JSONDecodeError:
-        return None
+    # 4. Fallback env vars
+    fallback_username = get_env_value(config.credentials.fallback_username_env)
+    fallback_password = get_env_value(config.credentials.fallback_password_env)
+    if fallback_username and fallback_password:
+        return {"username": fallback_username, "password": fallback_password}, "fallback"
+
+    return None
 
 
 def get_github_token(config: Config | None = None) -> str | None:

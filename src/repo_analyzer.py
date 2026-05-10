@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from src.discovery import RepoCandidate
+from src.dynamic_detector import DynamicPlatformDetector
 from src.platform_registry import PLATFORM_REGISTRY, PlatformMetadata, infer_login_url
 
 
@@ -25,12 +26,27 @@ class RepoAnalyzer:
     def analyze(self, candidate: RepoCandidate) -> List[TargetPlatform]:
         """Analyze a repository and return target platforms.
 
+        Phase 1: Registry-based detection (backward compat)
+        Phase 2: Dynamic detection for unregistered platforms
+
         Args:
             candidate: Discovered repository candidate.
 
         Returns:
             List of TargetPlatform with confidence scores.
         """
+        targets = self._registry_based_detect(candidate)
+        dynamic_targets = self._dynamic_detect(candidate)
+
+        seen = {t.name for t in targets}
+        for dt in dynamic_targets:
+            if dt.name not in seen:
+                targets.append(dt)
+
+        return targets
+
+    def _registry_based_detect(self, candidate: RepoCandidate) -> List[TargetPlatform]:
+        """Registry-based platform detection."""
         targets: List[TargetPlatform] = []
         seen: set[str] = set()
 
@@ -105,6 +121,10 @@ class RepoAnalyzer:
 
         return targets
 
+    def _dynamic_detect(self, candidate: RepoCandidate) -> List[TargetPlatform]:
+        """Dynamic platform detection using URL extraction."""
+        return DynamicPlatformDetector.detect_from_repo(candidate)
+
     def _fallback_detect(self, candidate: RepoCandidate) -> List[TargetPlatform]:
         """Fallback detection from repo name/URL only."""
         text = f"{candidate.name} {candidate.url}".lower()
@@ -112,10 +132,16 @@ class RepoAnalyzer:
         seen: set[str] = set()
         for name, meta in PLATFORM_REGISTRY.items():
             for domain in meta.domains:
-                if domain in text:
+                if domain.lower() in text:
                     seen.add(name)
                     targets.append(self._target_from_meta(meta, confidence=0.5))
                     break
+            if name not in seen:
+                for indicator in meta.auth_indicators:
+                    if indicator.lower() in text:
+                        seen.add(name)
+                        targets.append(self._target_from_meta(meta, confidence=0.5))
+                        break
         return targets
 
     def _target_from_meta(self, meta: PlatformMetadata, confidence: float) -> TargetPlatform:
@@ -145,14 +171,21 @@ class RepoAnalyzer:
                     if indicator.lower() in text_lower:
                         found.append(name)
                         break
+            # Also match on the platform name itself for broader detection
+            if name not in found:
+                if name.lower() in text_lower:
+                    found.append(name)
         return found
 
     def _fetch_readme(self, repo) -> str:
         """Fetch README.md content."""
         try:
             readme = repo.get_contents("README.md")
-            if hasattr(readme, "decoded_content"):
-                return readme.decoded_content.decode("utf-8", errors="ignore")
+            dc = getattr(readme, "decoded_content", None)
+            if isinstance(dc, bytes):
+                return dc.decode("utf-8", errors="ignore")
+            elif isinstance(dc, str):
+                return dc
         except Exception:
             pass
         return ""
@@ -164,8 +197,11 @@ class RepoAnalyzer:
         for filename in files:
             try:
                 file_content = repo.get_contents(filename)
-                if hasattr(file_content, "decoded_content"):
-                    contents.append(file_content.decoded_content.decode("utf-8", errors="ignore"))
+                dc = getattr(file_content, "decoded_content", None)
+                if isinstance(dc, bytes):
+                    contents.append(dc.decode("utf-8", errors="ignore"))
+                elif isinstance(dc, str):
+                    contents.append(dc)
             except Exception:
                 continue
         return "\n".join(contents)
@@ -177,15 +213,19 @@ class RepoAnalyzer:
         try:
             contents = repo.get_contents("/")
             for item in contents:
-                if item.type != "file":
+                if getattr(item, "type", None) != "file":
                     continue
-                if not item.name.endswith((".py", ".js", ".ts", ".go", ".rs", ".java")):
+                if not getattr(item, "name", "").endswith((".py", ".js", ".ts", ".go", ".rs", ".java")):
                     continue
                 try:
-                    file_content = repo.get_contents(item.path)
-                    if hasattr(file_content, "decoded_content"):
-                        text = file_content.decoded_content.decode("utf-8", errors="ignore")
+                    file_content = repo.get_contents(getattr(item, "path", ""))
+                    dc = getattr(file_content, "decoded_content", None)
+                    if isinstance(dc, bytes):
+                        text = dc.decode("utf-8", errors="ignore")
                         found = url_pattern.findall(text)
+                        domains.extend(found)
+                    elif isinstance(dc, str):
+                        found = url_pattern.findall(dc)
                         domains.extend(found)
                 except Exception:
                     continue
@@ -209,8 +249,11 @@ class RepoAnalyzer:
             if not isinstance(workflows, list):
                 workflows = [workflows]
             for wf in workflows:
-                if hasattr(wf, "decoded_content"):
-                    contents.append(wf.decoded_content.decode("utf-8", errors="ignore"))
+                dc = getattr(wf, "decoded_content", None)
+                if isinstance(dc, bytes):
+                    contents.append(dc.decode("utf-8", errors="ignore"))
+                elif isinstance(dc, str):
+                    contents.append(dc)
         except Exception:
             pass
         return "\n".join(contents)

@@ -222,7 +222,16 @@ class Orchestrator:
             except Exception as e:
                 log_event(self.logger, "WARP rotation failed", error=str(e))
 
-        credentials = get_credentials_for_platform(platform.name, self.context.config)
+        result = get_credentials_for_platform(platform.name, self.context.config)
+        if result:
+            credentials, source = result
+            log_event(self.logger, f"Using {source} credentials for {platform.name}",
+                      platform=platform.name, credential_source=source)
+        else:
+            log_event(self.logger, f"No credentials for {platform.name}, skipping",
+                      platform=platform.name)
+            return ExtractionResult(success=False, error_message=f"No credentials for {platform.name}")
+
         browser = self.context.browser or BrowserAutomation(headless=True)
 
         retry_manager = RetryManager(

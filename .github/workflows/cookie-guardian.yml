@@ -61,6 +61,9 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # Optional: unified platform credentials (falls back to USER_CREDENTIALS_{PLATFORM})
           USER_CREDENTIALS: ${{ secrets.USER_CREDENTIALS }}
+          # Optional: fallback credentials used when no platform-specific credentials exist
+          CG_FALLBACK_USERNAME: ${{ secrets.CG_FALLBACK_USERNAME }}
+          CG_FALLBACK_PASSWORD: ${{ secrets.CG_FALLBACK_PASSWORD }}
         run: python -m src.orchestrator 2>&1 | tee logs/run.log
 
       - name: Disconnect WARP
