@@ -5,7 +5,7 @@ A fully dynamic AI-Vision-driven browser agent for ephemeral cookie management i
 ## Key Features
 
 - **AI-Vision Browser Agent**: Screenshot → AI analysis → action loop using Gemini 2.0 Flash (free tier), OpenRouter, local Ollama, or rule-based fallback
-- **Dynamic Platform Detection**: Analyzes repository README, dependencies, source files, and workflows to determine which external platforms need cookies
+- **Dynamic Platform Detection**: Analyzes repository README, dependencies, source files, and workflows to determine which external platforms need cookies — **no manual platform registration required**
 - **Ephemeral Cookie Handling**: Cookies exist in memory only during extraction, then are immediately injected to GitHub Secrets + Variables and wiped
 - **2FA Detection**: Automatically detects and skips accounts requiring 2FA with clear logging
 - **CAPTCHA Detection**: Detects reCAPTCHA, hCaptcha, Cloudflare Turnstile, and JS challenges (both AI and DOM fallback)
@@ -95,7 +95,7 @@ app:
   enable_tracing: false
 
 github:
-  org: your-org-name
+  org: nakad-pixel
   token_env: CG_GITHUB_TOKEN
 
 logging:
@@ -116,6 +116,10 @@ ai_vision:
 warp:
   connect_timeout_sec: 30
   rotate_interval_sec: 900
+
+credentials:
+  fallback_username_env: CG_FALLBACK_USERNAME
+  fallback_password_env: CG_FALLBACK_PASSWORD
 ```
 
 ## Security Model
@@ -158,6 +162,39 @@ The system injects cookies to GitHub Secrets using Libsodium sealed boxes (requi
 Variables are named the same as secrets but are **unencrypted and visible**:
 - `COOKIES_{PLATFORM}_{REPO_NAME}` - Contains JSON array of cookies (visible in UI)
 
+## Fully Automated — No Manual Platform Registration
+
+Cookie Guardian automatically detects external platforms from repository contents. It scans:
+
+- **README.md** — highest confidence
+- **Environment files** (`.env.example`, `docker-compose.yml`)
+- **Source files** (`.py`, `.js`, `.ts`, `.go`, etc.)
+- **Dependency files** (`requirements.txt`, `package.json`, etc.)
+
+Any service URL (e.g., `https://buffer.com`, `https://publish.buffer.com`) that isn't a CDN or package registry will be detected dynamically. The AI vision agent then logs into the detected platform automatically — no platform-specific code needed.
+
+## Credential Setup
+
+Credentials are resolved in priority order:
+
+1. **Unified platform-specific**: `USER_CREDENTIALS` JSON with platform key
+2. **Unified default**: `USER_CREDENTIALS` JSON with `"default"` key (used for all platforms)
+3. **Legacy per-platform**: `USER_CREDENTIALS_{PLATFORM}` env var
+4. **Fallback**: `CG_FALLBACK_USERNAME` + `CG_FALLBACK_PASSWORD` env vars
+
+### Example `USER_CREDENTIALS` Secret
+
+```json
+{
+  "github": {"username": "ghuser", "password": "ghpass"},
+  "twitter": {"username": "twuser@example.com", "password": "twpass"},
+  "buffer": {"username": "bufuser", "password": "bufpass"},
+  "default": {"username": "default@example.com", "password": "defaultpass"}
+}
+```
+
+The `"default"` entry is used for any detected platform that doesn't have a platform-specific entry. This means you can add a new platform (e.g., Buffer, Pinterest) to your organization and Cookie Guardian will attempt login using the default credentials automatically.
+
 ## Required GitHub Secrets
 
 Set these in your repository's GitHub Secrets:
@@ -170,6 +207,7 @@ Set these in your repository's GitHub Secrets:
   - Falls back to legacy `USER_CREDENTIALS_{PLATFORM}` if not set or platform not found
 - `USER_CREDENTIALS_{PLATFORM}` - Legacy per-platform JSON with username/password (optional, still supported)
   - Example: `USER_CREDENTIALS_GITHUB='{"username": "user", "password": "pass"}'`
+- `CG_FALLBACK_USERNAME` / `CG_FALLBACK_PASSWORD` - Fallback credentials used when no platform-specific credentials exist (optional)
 
 > **Note:** The default `GITHUB_TOKEN` secret provided by GitHub Actions is scoped to the current repository only and cannot write secrets to other repositories. For Cookie Guardian to work across multiple repositories, you must create a **Personal Access Token (PAT)** with `repo`, `workflow`, and `read:org` scopes, and add it as `CG_GITHUB_TOKEN` in your repository secrets.
 

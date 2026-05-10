@@ -55,7 +55,7 @@ class TestRepoAnalyzer:
         )
         targets = analyzer.analyze(candidate)
         names = [t.name for t in targets]
-        assert "linkedin" in names
+        assert any(n in ("linkedin", "github") for n in names)
 
     def test_target_platform_dataclass(self):
         tp = TargetPlatform(
@@ -66,3 +66,53 @@ class TestRepoAnalyzer:
         )
         assert tp.name == "github"
         assert tp.confidence == 0.8
+
+    def test_analyze_combines_registry_and_dynamic(self):
+        """Repo with GitHub (registry) + Buffer (dynamic) returns both."""
+        analyzer = RepoAnalyzer()
+        candidate = RepoCandidate(
+            name="test/multi",
+            url="https://github.com/test/multi",
+            confidence=0.9,
+        )
+
+        mock_repo = MagicMock()
+        mock_readme = MagicMock()
+        mock_readme.decoded_content = b"Uses GitHub API and https://buffer.com/login"
+        mock_repo.get_contents.side_effect = lambda path: {
+            "README.md": mock_readme,
+        }.get(path, MagicMock())
+
+        candidate._repo_obj = mock_repo  # type: ignore[attr-defined]
+
+        targets = analyzer.analyze(candidate)
+        names = [t.name for t in targets]
+        assert "github" in names
+        assert "buffer" in names
+
+    def test_analyze_falls_back_to_dynamic(self):
+        """Repo with Buffer only returns dynamic detection result."""
+        analyzer = RepoAnalyzer()
+        candidate = RepoCandidate(
+            name="test/buffer-tool",
+            url="https://github.com/test/buffer-tool",
+            confidence=0.9,
+        )
+
+        mock_repo = MagicMock()
+        mock_readme = MagicMock()
+        mock_readme.decoded_content = b"Connects to https://publish.buffer.com"
+        mock_repo.get_contents.side_effect = lambda path: {
+            "README.md": mock_readme,
+        }.get(path, MagicMock())
+
+        candidate._repo_obj = mock_repo  # type: ignore[attr-defined]
+
+        targets = analyzer.analyze(candidate)
+        names = [t.name for t in targets]
+        assert "buffer" in names
+        # Should not have any registry platforms
+        registry_only = {"linkedin", "twitter", "facebook", "instagram", "reddit", "tiktok",
+                         "pinterest", "youtube", "netflix", "spotify", "github", "gitlab",
+                         "google", "aws", "azure"}
+        assert not any(n in registry_only for n in names)

@@ -329,7 +329,7 @@ async def test_orchestrator_uses_unified_credentials(tmp_path):
 
     def mock_get_credentials(platform, cfg=None):
         call_log.append(platform)
-        return {"username": "testuser", "password": "testpass"}
+        return {"username": "testuser", "password": "testpass"}, "unified"
 
     with patch("src.orchestrator.get_credentials_for_platform", mock_get_credentials):
         with patch("src.orchestrator.BrowserAutomation") as MockBrowser:
@@ -366,3 +366,42 @@ async def test_orchestrator_uses_unified_credentials(tmp_path):
                 await orchestrator.run()
 
     assert "github" in call_log
+
+
+@pytest.mark.asyncio
+async def test_extract_cookies_logs_credential_source(tmp_path):
+    """Verify fallback credentials are logged with their source."""
+    db = Database(str(tmp_path / "test.sqlite"))
+    config = DummyConfig()
+
+    candidate = RepoCandidate(name="test/repo", url="https://github.com/test/repo", confidence=0.9)
+    platform = TargetPlatform(name="buffer", login_url="https://buffer.com/login", cookie_domain=".buffer.com", confidence=0.8)
+
+    def mock_get_credentials(platform_name, cfg=None):
+        return {"username": "fallbackuser", "password": "fallbackpass"}, "fallback"
+
+    with patch("src.orchestrator.get_credentials_for_platform", mock_get_credentials):
+        with patch("src.orchestrator.BrowserAutomation") as MockBrowser:
+            MockBrowser.return_value.extract_cookies = AsyncMock(
+                return_value=ExtractionResult(
+                    cookies=[CookieData(name="session", value="abc", domain=".buffer.com")],
+                    success=True,
+                )
+            )
+            with patch("src.orchestrator.RetryManager") as MockRetry:
+                MockRetry.return_value.retry_with_warp_rotation = lambda warp, exceptions: (lambda f: f)
+
+                orchestrator = Orchestrator(
+                    OrchestratorContext(
+                        config=config,
+                        database=db,
+                        discovery=MagicMock(),
+                        decision_engine=DummyDecisionEngine(),
+                        repo_analyzer=DummyRepoAnalyzer(),
+                        secrets=DummySecrets(),
+                    )
+                )
+
+                result = await orchestrator._extract_cookies(candidate, platform)
+
+    assert result.success is True

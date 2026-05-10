@@ -90,6 +90,18 @@ app:
         # Should not have glm attribute
         assert not hasattr(config, 'glm')
 
+    def test_credentials_fallback_env_config(self, tmp_path):
+        """Test that fallback credential env vars are parsed from config."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("""
+credentials:
+  fallback_username_env: MY_USER
+  fallback_password_env: MY_PASS
+""")
+        config = load_config(config_path)
+        assert config.credentials.fallback_username_env == "MY_USER"
+        assert config.credentials.fallback_password_env == "MY_PASS"
+
 
 class TestGetEnvValue:
     def test_get_env_value_returns_value(self):
@@ -123,8 +135,10 @@ class TestGetCredentialsForPlatform:
             result = get_credentials_for_platform("github")
 
         assert result is not None
-        assert result["username"] == "testuser"
-        assert result["password"] == "testpass"
+        creds, source = result
+        assert source == "legacy"
+        assert creds["username"] == "testuser"
+        assert creds["password"] == "testpass"
 
     def test_get_credentials_missing_env(self):
         """Test when credentials env var is not set."""
@@ -152,7 +166,9 @@ credentials:
             result = get_credentials_for_platform("aws", config)
 
         assert result is not None
-        assert result["username"] == "user"
+        creds, source = result
+        assert source == "legacy"
+        assert creds["username"] == "user"
 
     def test_get_credentials_unified_json_success(self):
         """Set USER_CREDENTIALS env var with valid JSON, assert correct lookup for multiple platforms."""
@@ -162,11 +178,15 @@ credentials:
             tw = get_credentials_for_platform("twitter")
 
         assert gh is not None
-        assert gh["username"] == "ghuser"
-        assert gh["password"] == "ghpass"
+        creds, source = gh
+        assert source == "unified"
+        assert creds["username"] == "ghuser"
+        assert creds["password"] == "ghpass"
         assert tw is not None
-        assert tw["username"] == "twuser"
-        assert tw["password"] == "twpass"
+        creds_tw, source_tw = tw
+        assert source_tw == "unified"
+        assert creds_tw["username"] == "twuser"
+        assert creds_tw["password"] == "twpass"
 
     def test_get_credentials_unified_json_missing_platform(self):
         """Set USER_CREDENTIALS with JSON that doesn't contain the requested platform, assert fallback to per-platform env var works."""
@@ -176,8 +196,10 @@ credentials:
             result = get_credentials_for_platform("twitter")
 
         assert result is not None
-        assert result["username"] == "legacyuser"
-        assert result["password"] == "legacypass"
+        creds, source = result
+        assert source == "legacy"
+        assert creds["username"] == "legacyuser"
+        assert creds["password"] == "legacypass"
 
     def test_get_credentials_unified_json_malformed(self):
         """Set USER_CREDENTIALS to invalid JSON, assert fallback to per-platform env var works."""
@@ -186,8 +208,10 @@ credentials:
             result = get_credentials_for_platform("github")
 
         assert result is not None
-        assert result["username"] == "legacyuser"
-        assert result["password"] == "legacypass"
+        creds, source = result
+        assert source == "legacy"
+        assert creds["username"] == "legacyuser"
+        assert creds["password"] == "legacypass"
 
     def test_get_credentials_unified_json_not_dict(self):
         """Set USER_CREDENTIALS to a JSON array/string, assert fallback works."""
@@ -196,8 +220,10 @@ credentials:
             result = get_credentials_for_platform("github")
 
         assert result is not None
-        assert result["username"] == "legacyuser"
-        assert result["password"] == "legacypass"
+        creds, source = result
+        assert source == "legacy"
+        assert creds["username"] == "legacyuser"
+        assert creds["password"] == "legacypass"
 
     def test_get_credentials_legacy_still_works(self):
         """Ensure USER_CREDENTIALS_GITHUB still works when USER_CREDENTIALS is not set."""
@@ -206,8 +232,10 @@ credentials:
             result = get_credentials_for_platform("github")
 
         assert result is not None
-        assert result["username"] == "legacyuser"
-        assert result["password"] == "legacypass"
+        creds, source = result
+        assert source == "legacy"
+        assert creds["username"] == "legacyuser"
+        assert creds["password"] == "legacypass"
 
     def test_get_credentials_unified_takes_precedence(self):
         """Set both USER_CREDENTIALS and USER_CREDENTIALS_GITHUB with different values, assert unified takes precedence."""
@@ -217,8 +245,66 @@ credentials:
             result = get_credentials_for_platform("github")
 
         assert result is not None
-        assert result["username"] == "unifieduser"
-        assert result["password"] == "unifiedpass"
+        creds, source = result
+        assert source == "unified"
+        assert creds["username"] == "unifieduser"
+        assert creds["password"] == "unifiedpass"
+
+    def test_get_credentials_unified_platform(self):
+        """Unified JSON with platform key returns unified source."""
+        unified = '{"buffer": {"username": "bufuser", "password": "bufpass"}}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS": unified}, clear=True):
+            result = get_credentials_for_platform("buffer")
+
+        assert result is not None
+        creds, source = result
+        assert source == "unified"
+        assert creds["username"] == "bufuser"
+        assert creds["password"] == "bufpass"
+
+    def test_get_credentials_unified_default(self):
+        """Unified JSON with default key returns default source."""
+        unified = '{"default": {"username": "defuser", "password": "defpass"}}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS": unified}, clear=True):
+            result = get_credentials_for_platform("buffer")
+
+        assert result is not None
+        creds, source = result
+        assert source == "default"
+        assert creds["username"] == "defuser"
+        assert creds["password"] == "defpass"
+
+    def test_get_credentials_cg_fallback(self):
+        """CG_FALLBACK_USERNAME and CG_FALLBACK_PASSWORD used when nothing else set."""
+        with patch.dict("os.environ", {
+            "CG_FALLBACK_USERNAME": "fallbackuser",
+            "CG_FALLBACK_PASSWORD": "fallbackpass",
+        }, clear=True):
+            result = get_credentials_for_platform("buffer")
+
+        assert result is not None
+        creds, source = result
+        assert source == "fallback"
+        assert creds["username"] == "fallbackuser"
+        assert creds["password"] == "fallbackpass"
+
+    def test_get_credentials_platform_precedence_over_default(self):
+        """Platform-specific unified key takes precedence over default key."""
+        unified = '{"buffer": {"username": "bufuser", "password": "bufpass"}, "default": {"username": "defuser", "password": "defpass"}}'
+        with patch.dict("os.environ", {"USER_CREDENTIALS": unified}, clear=True):
+            result = get_credentials_for_platform("buffer")
+
+        assert result is not None
+        creds, source = result
+        assert source == "unified"
+        assert creds["username"] == "bufuser"
+        assert creds["password"] == "bufpass"
+
+    def test_get_credentials_returns_none_when_empty(self):
+        """When no credentials are set at all, return None."""
+        with patch.dict("os.environ", {}, clear=True):
+            result = get_credentials_for_platform("buffer")
+        assert result is None
 
 
 class TestResolveConfigPath:

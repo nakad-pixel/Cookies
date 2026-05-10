@@ -29,7 +29,7 @@ github:
   # Required: GitHub GraphQL URL (default: https://api.github.com/graphql)
   graphql_url: https://api.github.com/graphql
   # Required: Target GitHub organization or user name
-  org: example-org
+  org: nakad-pixel
   # Environment variable that holds the GitHub token (default: CG_GITHUB_TOKEN)
   token_env: CG_GITHUB_TOKEN
 
@@ -68,8 +68,14 @@ credentials:
   # Example: USER_CREDENTIALS_GITHUB='{"username":"user","password":"pass"}'
   prefix: USER_CREDENTIALS
 
+  # Fallback credentials when no platform-specific credentials are found.
+  # Set CG_FALLBACK_USERNAME and CG_FALLBACK_PASSWORD env vars.
+  fallback_username_env: CG_FALLBACK_USERNAME
+  fallback_password_env: CG_FALLBACK_PASSWORD
+
   # Alternatively, use a single unified env var:
   # export USER_CREDENTIALS='{
   #   "github": {"username":"user","password":"pass"},
-  #   "twitter": {"username":"email","password":"pass"}
+  #   "twitter": {"username":"email","password":"pass"},
+  #   "default": {"username":"default@example.com","password":"pass"}
   # }'
