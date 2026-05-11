@@ -213,3 +213,68 @@ class TestDiscoveryEngine:
         engine = DiscoveryEngine("test-token", "test-org")
         score = engine._score_repo(mock_repo)
         assert score > 0.1  # Should get platform detection bonus
+
+    @patch("src.discovery.Github")
+    def test_discover_user_account_fallback(self, mock_github_class):
+        """Test that 404 from get_organization falls back to get_user."""
+        from github import GithubException
+
+        mock_github = MagicMock()
+        mock_user = MagicMock()
+        mock_repo = MagicMock()
+        mock_repo.full_name = "nakad-pixel/repo"
+        mock_repo.html_url = "https://github.com/nakad-pixel/repo"
+        mock_repo.stargazers_count = 100
+        mock_repo.get_contents.return_value = []
+
+        mock_user.get_repos.return_value = [mock_repo]
+        mock_github.get_user.return_value = mock_user
+
+        exc = GithubException(404, {"message": "Not Found"})
+        mock_github.get_organization.side_effect = exc
+        mock_github_class.return_value = mock_github
+
+        engine = DiscoveryEngine("test-token", "nakad-pixel")
+        candidates = engine.discover()
+
+        assert len(candidates) == 1
+        assert candidates[0].name == "nakad-pixel/repo"
+        mock_github.get_user.assert_called_once_with("nakad-pixel")
+
+    @patch("src.discovery.Github")
+    def test_discover_organization_still_works(self, mock_github_class):
+        """Test that get_organization success does not call get_user."""
+        mock_github = MagicMock()
+        mock_org = MagicMock()
+        mock_repo = MagicMock()
+        mock_repo.full_name = "test/repo"
+        mock_repo.html_url = "https://github.com/test/repo"
+        mock_repo.stargazers_count = 100
+        mock_repo.get_contents.return_value = []
+
+        mock_org.get_repos.return_value = [mock_repo]
+        mock_github.get_organization.return_value = mock_org
+        mock_github_class.return_value = mock_github
+
+        engine = DiscoveryEngine("test-token", "test-org")
+        candidates = engine.discover()
+
+        assert len(candidates) == 1
+        assert candidates[0].name == "test/repo"
+        mock_github.get_user.assert_not_called()
+
+    @patch("src.discovery.Github")
+    def test_discover_non_404_error_propagates(self, mock_github_class):
+        """Test that non-404 errors from get_organization propagate."""
+        from github import GithubException
+
+        mock_github = MagicMock()
+
+        exc = GithubException(403, {"message": "Forbidden"})
+        mock_github.get_organization.side_effect = exc
+        mock_github_class.return_value = mock_github
+
+        engine = DiscoveryEngine("test-token", "test-org")
+        with pytest.raises(Exception):
+            engine.discover()
+        mock_github.get_user.assert_not_called()
