@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, List
 
-from github import Github
+from github import Github, GithubException
 
 from src.platform_registry import detect_platform_from_text
 
@@ -46,9 +46,13 @@ class DiscoveryEngine:
         self.org = org
 
     def discover(self) -> List[RepoCandidate]:
-        org = self.client.get_organization(self.org)
+        """Discover repositories that may need cookies.
+
+        Tries organization first, then falls back to user account.
+        """
+        repos = self._get_repos()
         candidates: List[RepoCandidate] = []
-        for repo in org.get_repos():
+        for repo in repos:
             confidence = self._score_repo(repo)
             if confidence > 0:
                 candidate = RepoCandidate(name=repo.full_name, url=repo.html_url, confidence=confidence)
@@ -56,6 +60,18 @@ class DiscoveryEngine:
                 candidate._repo_obj = repo  # type: ignore[attr-defined]
                 candidates.append(candidate)
         return sorted(candidates, key=lambda c: c.confidence, reverse=True)
+
+    def _get_repos(self):
+        """Get repos from org or user account."""
+        try:
+            org = self.client.get_organization(self.org)
+            return org.get_repos()
+        except GithubException as exc:
+            if exc.status == 404:
+                # Not an organization — try user account
+                user = self.client.get_user(self.org)
+                return user.get_repos()
+            raise
 
     def _score_repo(self, repo: object) -> float:
         score = 0.0
