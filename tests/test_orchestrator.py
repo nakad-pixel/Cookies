@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,7 +7,13 @@ from src.browser_automation import CookieData, ExtractionResult
 from src.database import Database
 from src.decision_engine import Decision
 from src.discovery import RepoCandidate
-from src.orchestrator import Orchestrator, OrchestratorContext, State, build_orchestrator
+from src.orchestrator import (
+    Orchestrator,
+    OrchestratorContext,
+    State,
+    build_orchestrator,
+    _log_credential_status,
+)
 from src.config import Config, get_credentials_for_platform
 from src.repo_analyzer import TargetPlatform
 
@@ -53,7 +60,9 @@ class DummyConfig:
             'screenshot_max_width': 800,
         })()
         self.credentials = type('obj', (object,), {
-            'prefix': 'USER_CREDENTIALS'
+            'prefix': 'USER_CREDENTIALS',
+            'fallback_username_env': 'CG_FALLBACK_USERNAME',
+            'fallback_password_env': 'CG_FALLBACK_PASSWORD',
         })()
         self.app = type('obj', (object,), {
             'max_concurrency': 2,
@@ -405,3 +414,50 @@ async def test_extract_cookies_logs_credential_source(tmp_path):
                 result = await orchestrator._extract_cookies(candidate, platform)
 
     assert result.success is True
+
+
+class TestLogCredentialStatus:
+    def test_logs_warning_when_no_credentials_set(self, caplog):
+        """Mock all credential env vars as empty, verify warning log is emitted."""
+        config = DummyConfig()
+        logger = logging.getLogger("test-credential-warning")
+
+        with patch.dict("os.environ", {}, clear=True):
+            with caplog.at_level(logging.INFO, logger="test-credential-warning"):
+                _log_credential_status(config, logger)
+
+        assert "Credential sources checked" in caplog.text
+        assert "WARNING: No credentials configured" in caplog.text
+
+    def test_logs_sources_when_user_credentials_set(self, caplog):
+        """Mock USER_CREDENTIALS, verify sources logged."""
+        config = DummyConfig()
+        logger = logging.getLogger("test-credential-sources")
+        unified = '{"github": {"username": "u", "password": "p"}, "default": {"username": "d", "password": "x"}}'
+
+        with patch.dict("os.environ", {"USER_CREDENTIALS": unified}, clear=True):
+            with caplog.at_level(logging.INFO, logger="test-credential-sources"):
+                _log_credential_status(config, logger)
+
+        assert "Credential sources checked" in caplog.text
+        records = [r for r in caplog.records if "Credential sources checked" in r.getMessage()]
+        assert len(records) == 1
+        assert "USER_CREDENTIALS with 1 platform(s) + default" in records[0].extra["sources"]
+
+    def test_logs_sources_when_fallback_set(self, caplog):
+        """Mock fallback credentials, verify sources logged."""
+        config = DummyConfig()
+        logger = logging.getLogger("test-credential-fallback")
+
+        with patch.dict("os.environ", {
+            "CG_FALLBACK_USERNAME": "user",
+            "CG_FALLBACK_PASSWORD": "pass",
+        }, clear=True):
+            with caplog.at_level(logging.INFO, logger="test-credential-fallback"):
+                _log_credential_status(config, logger)
+
+        assert "Credential sources checked" in caplog.text
+        records = [r for r in caplog.records if "Credential sources checked" in r.getMessage()]
+        assert len(records) == 1
+        assert "CG_FALLBACK_USERNAME: set" in records[0].extra["sources"]
+        assert "WARNING: No credentials configured" not in caplog.text
