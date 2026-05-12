@@ -232,6 +232,50 @@ Configure via `config.yaml` or environment variables. The factory automatically 
 - **Human Behavior**: Mouse Bezier curves, realistic typing with Gaussian delays, scroll emulation, random pauses
 - **Header Randomization**: Realistic `Sec-Ch-Ua`, `Accept-Language`, and other headers per platform
 
+## Troubleshooting
+
+### "No credentials for X, skipping"
+
+If you see log messages like:
+```
+No credentials for github, skipping extraction.
+No credentials for discord, skipping
+```
+
+This means **no credentials are configured**. Cookie Guardian cannot extract cookies without login credentials. Set one of the following in your GitHub repository secrets:
+
+**Option 1: Unified credentials (recommended)**
+
+Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**:
+- Name: `USER_CREDENTIALS`
+- Value:
+```json
+{
+  "github": {"username": "your_user", "password": "your_pass"},
+  "twitter": {"username": "your_user", "password": "your_pass"},
+  "default": {"username": "your_user", "password": "your_pass"}
+}
+```
+
+The `"default"` key is used for any platform that doesn't have a platform-specific entry.
+
+**Option 2: Fallback credentials (simplest for single account)**
+
+Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**:
+- Name: `CG_FALLBACK_USERNAME` — Value: your username
+- Name: `CG_FALLBACK_PASSWORD` — Value: your password
+
+These credentials will be used for all platforms when no platform-specific credentials exist.
+
+**Option 3: Legacy per-platform credentials**
+
+- Name: `USER_CREDENTIALS_GITHUB` — Value: `{"username": "...", "password": "..."}`
+- Name: `USER_CREDENTIALS_TWITTER` — Value: `{"username": "...", "password": "..."}`
+
+### WARP rotation failures in CI
+
+If you see repeated `WARP rotation failed` errors in GitHub Actions, the system now automatically detects CI environments and passes `--accept-tos` to `warp-cli`. If WARP CLI is not installed, the error is silently ignored — WARP is optional.
+
 ## Testing
 
 ```bash

@@ -26,6 +26,51 @@ from src.secrets_manager import GitHubActionsManager
 from src.warp_manager import WarpManager
 
 
+def _log_credential_status(config: Config, logger: logging.Logger) -> None:
+    """Log which credential sources are available at startup."""
+    sources_checked = []
+
+    # Check unified JSON
+    unified = get_env_value("USER_CREDENTIALS")
+    if unified:
+        try:
+            parsed = json.loads(unified)
+            if isinstance(parsed, dict):
+                platform_keys = [k for k in parsed.keys() if k != "default"]
+                has_default = "default" in parsed
+                sources_checked.append(
+                    f"USER_CREDENTIALS with {len(platform_keys)} platform(s)"
+                    + (" + default" if has_default else "")
+                )
+            else:
+                sources_checked.append("USER_CREDENTIALS set but not a valid JSON object")
+        except json.JSONDecodeError:
+            sources_checked.append("USER_CREDENTIALS set but invalid JSON")
+    else:
+        sources_checked.append("USER_CREDENTIALS: not set")
+
+    # Check fallback
+    fallback_user = get_env_value(config.credentials.fallback_username_env)
+    fallback_pass = get_env_value(config.credentials.fallback_password_env)
+    if fallback_user and fallback_pass:
+        sources_checked.append(f"{config.credentials.fallback_username_env}: set")
+    else:
+        sources_checked.append(f"{config.credentials.fallback_username_env}: not set")
+
+    log_event(logger, "Credential sources checked", sources=sources_checked)
+
+    # Warn if absolutely nothing is configured
+    if not unified and not (fallback_user and fallback_pass):
+        log_event(
+            logger,
+            "WARNING: No credentials configured. All extractions will be skipped. "
+            "Set either USER_CREDENTIALS (JSON with platform credentials) or "
+            f"{config.credentials.fallback_username_env}/{config.credentials.fallback_password_env} "
+            "as GitHub Secrets.",
+            severity="WARNING",
+        )
+
+
 class State(str, Enum):
     """Orchestrator states following the ephemeral flow."""
     IDLE = "IDLE"
@@ -228,9 +273,17 @@ class Orchestrator:
             log_event(self.logger, f"Using {source} credentials for {platform.name}",
                       platform=platform.name, credential_source=source)
         else:
-            log_event(self.logger, f"No credentials for {platform.name}, skipping",
-                      platform=platform.name)
-            return ExtractionResult(success=False, error_message=f"No credentials for {platform.name}")
+            log_event(
+                self.logger,
+                f"No credentials for {platform.name}, skipping extraction. "
+                f"Checked: USER_CREDENTIALS['{platform.name}'], USER_CREDENTIALS['default'], "
+                f"USER_CREDENTIALS_{platform.name.upper()}, {self.context.config.credentials.fallback_username_env}",
+                platform=platform.name,
+            )
+            return ExtractionResult(
+                success=False,
+                error_message=f"No credentials for {platform.name}",
+            )
 
         browser = self.context.browser or BrowserAutomation(headless=True)
 
@@ -417,7 +470,12 @@ def build_orchestrator() -> Orchestrator:
     # Optional components
     warp: Optional[WarpManager] = None
     try:
-        warp = WarpManager(connect_timeout_sec=config.warp.connect_timeout_sec)
+        # In CI (GitHub Actions), WARP requires --accept-tos
+        in_ci = bool(os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"))
+        warp = WarpManager(
+            connect_timeout_sec=config.warp.connect_timeout_sec,
+            accept_tos=in_ci,
+        )
     except Exception:
         pass  # WARP is optional
 
@@ -441,7 +499,9 @@ def build_orchestrator() -> Orchestrator:
         browser=browser,
     )
 
-    return Orchestrator(context)
+    orchestrator = Orchestrator(context)
+    _log_credential_status(config, orchestrator.logger)
+    return orchestrator
 
 
 if __name__ == "__main__":

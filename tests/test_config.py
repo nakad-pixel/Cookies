@@ -306,6 +306,20 @@ credentials:
             result = get_credentials_for_platform("buffer")
         assert result is None
 
+    def test_get_credentials_returns_fallback_in_ci(self):
+        """Ensure fallback credentials work when env vars are set."""
+        with patch.dict("os.environ", {
+            "CG_FALLBACK_USERNAME": "ci_user",
+            "CG_FALLBACK_PASSWORD": "ci_pass",
+        }, clear=True):
+            result = get_credentials_for_platform("any_platform")
+
+        assert result is not None
+        creds, source = result
+        assert source == "fallback"
+        assert creds["username"] == "ci_user"
+        assert creds["password"] == "ci_pass"
+
 
 class TestResolveConfigPath:
     def test_env_var_override(self, tmp_path):
