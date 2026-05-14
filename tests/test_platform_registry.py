@@ -20,8 +20,32 @@ class TestPlatformRegistry:
 
     def test_github_metadata(self):
         meta = PLATFORM_REGISTRY["github"]
-        assert meta.login_url == "https://github.com/login"
+        assert meta.login_url == "https://github.com/"
         assert ".github.com" in meta.cookie_domains
+
+    def test_twitter_homepage_url(self):
+        meta = PLATFORM_REGISTRY["twitter"]
+        assert meta.login_url == "https://x.com/"
+
+    def test_instagram_homepage_url(self):
+        meta = PLATFORM_REGISTRY["instagram"]
+        assert meta.login_url == "https://www.instagram.com/"
+
+    def test_linkedin_homepage_url(self):
+        meta = PLATFORM_REGISTRY["linkedin"]
+        assert meta.login_url == "https://www.linkedin.com/"
+
+    def test_reddit_homepage_url(self):
+        meta = PLATFORM_REGISTRY["reddit"]
+        assert meta.login_url == "https://www.reddit.com/"
+
+    def test_tiktok_homepage_url(self):
+        meta = PLATFORM_REGISTRY["tiktok"]
+        assert meta.login_url == "https://www.tiktok.com/"
+
+    def test_facebook_homepage_url(self):
+        meta = PLATFORM_REGISTRY["facebook"]
+        assert meta.login_url == "https://www.facebook.com/"
 
     def test_get_platform_metadata_found(self):
         meta = get_platform_metadata("github")
@@ -34,11 +58,11 @@ class TestPlatformRegistry:
 
     def test_infer_login_url(self):
         url = infer_login_url("example.com")
-        assert url == "https://example.com/login"
+        assert url == "https://example.com/"
 
     def test_infer_login_url_with_https(self):
         url = infer_login_url("https://example.com")
-        assert url == "https://example.com/login"
+        assert url == "https://example.com/"
 
     def test_detect_platform_from_text(self):
         text = "This project uses linkedin.com and twitter.com APIs."
