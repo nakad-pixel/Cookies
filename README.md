@@ -276,6 +276,62 @@ These credentials will be used for all platforms when no platform-specific crede
 
 If you see repeated `WARP rotation failed` errors in GitHub Actions, the system now automatically detects CI environments and passes `--accept-tos` to `warp-cli`. If WARP CLI is not installed, the error is silently ignored — WARP is optional.
 
+### Extraction appears successful but no secrets are injected
+
+If you see "extraction successful" in logs but no secrets or variables appear in the target repository (e.g., `nakad-pixel/Model`), check the following:
+
+**1. Verify your token is a PAT, not the default `GITHUB_TOKEN`**
+
+The default `GITHUB_TOKEN` provided by GitHub Actions starts with `ghs_` and is scoped to the **current repository only**. It **cannot** write secrets to other repositories.
+
+- Go to **GitHub Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
+- Generate a new token with `repo`, `workflow`, and `read:org` scopes
+- Add it as `CG_GITHUB_TOKEN` in your Cookie Guardian repository secrets
+- The orchestrator logs a warning at startup if it detects a `ghs_` token
+
+**2. Check shard alignment**
+
+If `shard_total` is greater than 1 in `config.yaml`, each CI job only processes a subset of repositories. The model repo might be assigned to a different shard. Look for log lines like:
+```
+Shard 0/3: processing 5 repos, skipping 10
+```
+Run the manual workflow and select the shard that contains your target repo, or set `shard_total: 1` temporarily to process all repos in a single job.
+
+**3. Verify empty cookies**
+
+The AI vision agent may report `LOGIN_SUCCESS` but the browser context has zero cookies. This can happen when login occurs on a different domain or the session wasn't persisted. Look for:
+```
+No cookies to inject — extraction returned empty cookie list
+```
+If you see this, the login succeeded visually but no session cookies were captured. Check the platform's login flow and cookie domain settings.
+
+**4. Check for DNS errors from placeholder URLs**
+
+If logs show `ERR_NAME_NOT_RESOLVED` for domains like `your-worker-url.workers.dev` or `localhost:3000`, these are placeholder URLs detected from source code. The dynamic detector now filters these automatically. If you still see them, they may be hardcoded in new patterns — open an issue.
+
+**5. Where to look for injected secrets**
+
+After a successful run, verify secrets in the target repository:
+- Go to the target repo → **Settings** → **Secrets and variables** → **Actions**
+- Look for secrets named `COOKIES_{PLATFORM}_{REPO_NAME}` (e.g., `COOKIES_BUFFER_MODEL`)
+- Variables with the same name will also appear under the **Variables** tab (unencrypted, visible in UI)
+
+**6. Test token permissions manually**
+
+You can test whether your token can write to a repo using the validation script:
+```bash
+export CG_GITHUB_TOKEN="your-token"
+python -c "
+from src.config import load_config, get_github_token
+from src.secrets_manager import GitHubActionsManager
+config = load_config()
+token = get_github_token(config)
+sm = GitHubActionsManager(config.github.api_url, token)
+print(sm.validate_token_permissions('nakad-pixel/Model'))
+"
+```
+If this prints `False`, your token lacks permission for that repository.
+
 ## Testing
 
 ```bash

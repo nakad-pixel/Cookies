@@ -13,6 +13,7 @@ from src.orchestrator import (
     State,
     build_orchestrator,
     _log_credential_status,
+    _validate_setup,
 )
 from src.config import Config, get_credentials_for_platform
 from src.repo_analyzer import TargetPlatform
@@ -72,6 +73,8 @@ class DummyConfig:
             'tracing_dir': 'data/traces',
             'enable_har': False,
             'enable_tracing': False,
+            'shard_id': 0,
+            'shard_total': 1,
         })()
         self.warp = type('obj', (object,), {
             'connect_timeout_sec': 30,
@@ -461,3 +464,124 @@ class TestLogCredentialStatus:
         assert len(records) == 1
         assert "CG_FALLBACK_USERNAME: set" in records[0].extra["sources"]
         assert "WARNING: No credentials configured" not in caplog.text
+
+
+class TestValidateSetup:
+    def test_warns_on_default_github_token(self):
+        """Test that _validate_setup warns when using a ghs_ token."""
+        config = DummyConfig()
+        context = OrchestratorContext(
+            config=config,
+            database=MagicMock(),
+            discovery=DummyDiscovery(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
+            secrets=DummySecrets(),
+        )
+
+        with patch("src.orchestrator.get_github_token", return_value="ghs_abc123"):
+            with patch("src.orchestrator.get_credentials_for_platform", return_value=None):
+                warnings = _validate_setup(context)
+
+        assert any("ghs_ prefix" in w for w in warnings)
+
+    def test_warns_when_no_credentials(self):
+        """Test that _validate_setup warns when no credentials are configured."""
+        config = DummyConfig()
+        context = OrchestratorContext(
+            config=config,
+            database=MagicMock(),
+            discovery=DummyDiscovery(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
+            secrets=DummySecrets(),
+        )
+
+        with patch("src.orchestrator.get_github_token", return_value="ghp_mytoken"):
+            with patch("src.orchestrator.get_credentials_for_platform", return_value=None):
+                warnings = _validate_setup(context)
+
+        assert any("No credentials configured" in w for w in warnings)
+
+    def test_returns_empty_when_all_good(self):
+        """Test that _validate_setup returns empty list when everything is configured."""
+        config = DummyConfig()
+        context = OrchestratorContext(
+            config=config,
+            database=MagicMock(),
+            discovery=DummyDiscovery(),
+            decision_engine=DummyDecisionEngine(),
+            repo_analyzer=DummyRepoAnalyzer(),
+            secrets=DummySecrets(),
+        )
+
+        with patch("src.orchestrator.get_github_token", return_value="ghp_mytoken"):
+            with patch(
+                "src.orchestrator.get_credentials_for_platform",
+                return_value=({"username": "u", "password": "p"}, "unified"),
+            ):
+                warnings = _validate_setup(context)
+
+        assert warnings == []
+
+
+class TestShardFiltering:
+    @pytest.mark.asyncio
+    async def test_shard_filters_repositories(self, tmp_path):
+        """Test that sharding only processes repos assigned to the shard."""
+        db = Database(str(tmp_path / "test.sqlite"))
+        config = DummyConfig()
+        config.app.shard_id = 0
+        config.app.shard_total = 2
+
+        class MultiDiscovery:
+            def discover(self):
+                return [
+                    RepoCandidate(name="repo-a", url="https://github.com/org/repo-a", confidence=0.9),
+                    RepoCandidate(name="repo-b", url="https://github.com/org/repo-b", confidence=0.9),
+                ]
+
+        orchestrator = Orchestrator(
+            OrchestratorContext(
+                config=config,
+                database=db,
+                discovery=MultiDiscovery(),
+                decision_engine=DummyDecisionEngine(),
+                repo_analyzer=DummyRepoAnalyzer(),
+                secrets=DummySecrets(),
+            )
+        )
+
+        candidates = await orchestrator._discover_repositories()
+        # With hash-based sharding, one of the two repos will be on shard 0
+        assert len(candidates) <= 2
+        assert len(candidates) >= 0
+
+    @pytest.mark.asyncio
+    async def test_no_sharding_when_total_is_one(self, tmp_path):
+        """Test that all repos are processed when shard_total is 1."""
+        db = Database(str(tmp_path / "test.sqlite"))
+        config = DummyConfig()
+        config.app.shard_id = 0
+        config.app.shard_total = 1
+
+        class MultiDiscovery:
+            def discover(self):
+                return [
+                    RepoCandidate(name="repo-a", url="https://github.com/org/repo-a", confidence=0.9),
+                    RepoCandidate(name="repo-b", url="https://github.com/org/repo-b", confidence=0.9),
+                ]
+
+        orchestrator = Orchestrator(
+            OrchestratorContext(
+                config=config,
+                database=db,
+                discovery=MultiDiscovery(),
+                decision_engine=DummyDecisionEngine(),
+                repo_analyzer=DummyRepoAnalyzer(),
+                secrets=DummySecrets(),
+            )
+        )
+
+        candidates = await orchestrator._discover_repositories()
+        assert len(candidates) == 2

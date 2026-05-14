@@ -174,6 +174,28 @@ class TestGitHubActionsManager:
         assert mock_delete.called
 
 
+    @patch("src.secrets_manager.httpx.get")
+    def test_validate_token_permissions_success(self, mock_get):
+        """Test validate_token_permissions returns True on success."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"key_id": "123", "key": "YWJj"}
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
+        assert manager.validate_token_permissions("owner/repo") is True
+
+    @patch("src.secrets_manager.httpx.get")
+    def test_validate_token_permissions_failure(self, mock_get):
+        """Test validate_token_permissions returns False on failure."""
+        mock_response = Mock()
+        mock_response.raise_for_status.side_effect = Exception("404 Not Found")
+        mock_get.return_value = mock_response
+
+        manager = GitHubActionsManager("https://api.github.com", "test-token")
+        assert manager.validate_token_permissions("owner/repo") is False
+
+
 class TestSecretsManagerAlias:
     def test_alias_exists(self):
         """Test that SecretsManager is an alias for GitHubActionsManager."""

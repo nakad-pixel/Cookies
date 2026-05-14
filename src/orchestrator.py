@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -69,6 +70,31 @@ def _log_credential_status(config: Config, logger: logging.Logger) -> None:
             "as GitHub Secrets.",
             severity="WARNING",
         )
+
+
+def _validate_setup(context: OrchestratorContext) -> list[str]:
+    """Validate that the system can actually inject to target repos."""
+    warnings: list[str] = []
+
+    # Check token type
+    token = get_github_token(context.config)
+    if token and token.startswith("ghs_"):
+        warnings.append(
+            "WARNING: Using default GITHUB_TOKEN (ghs_ prefix). "
+            "This token can ONLY write secrets to the CURRENT repository. "
+            "To inject cookies into OTHER repos, set a Personal Access Token (PAT) "
+            "with 'repo' scope as the CG_GITHUB_TOKEN secret."
+        )
+
+    # Check credential sources
+    result = get_credentials_for_platform("test", context.config)
+    if result is None:
+        warnings.append(
+            "WARNING: No credentials configured. Set USER_CREDENTIALS, "
+            "USER_CREDENTIALS_PLATFORM, or CG_FALLBACK_USERNAME/PASSWORD."
+        )
+
+    return warnings
 
 
 class State(str, Enum):
@@ -188,7 +214,29 @@ class Orchestrator:
     async def _discover_repositories(self) -> List[RepoCandidate]:
         """Discover repositories that may need cookies."""
         log_event(self.logger, "Starting repository discovery")
-        candidates = self.context.discovery.discover()
+        all_candidates = self.context.discovery.discover()
+
+        # Shard filtering
+        shard_id = self.context.config.app.shard_id
+        shard_total = self.context.config.app.shard_total
+        if shard_total > 1:
+            # Simple hash-based sharding
+            candidates = [
+                c for c in all_candidates
+                if int(hashlib.md5(c.name.encode()).hexdigest(), 16) % shard_total == shard_id
+            ]
+            skipped = len(all_candidates) - len(candidates)
+            log_event(
+                self.logger,
+                f"Shard {shard_id}/{shard_total}: processing {len(candidates)} repos, skipping {skipped}",
+                shard_id=shard_id,
+                shard_total=shard_total,
+                processed_count=len(candidates),
+                skipped_count=skipped,
+            )
+        else:
+            candidates = all_candidates
+
         log_event(self.logger, f"Discovered {len(candidates)} candidate repositories")
         return candidates
 
@@ -327,7 +375,8 @@ class Orchestrator:
         await self._transition(State.INJECTING)
 
         if not cookies:
-            log_event(self.logger, "No cookies to inject", repo=candidate.name)
+            log_event(self.logger, "No cookies to inject — extraction returned empty cookie list",
+                      repo=candidate.name, platform=platform.name)
             return
 
         # Serialize cookies as JSON (this is the last time we see the values)
@@ -346,12 +395,30 @@ class Orchestrator:
 
         secret_name = self._sanitize_secret_name(f"COOKIES_{platform.name}_{candidate.name}")
 
+        log_event(
+            self.logger,
+            f"Injecting cookies to {candidate.name}",
+            repo=candidate.name,
+            platform=platform.name,
+            secret_name=secret_name,
+            cookie_count=len(cookies),
+            secret_value_length=len(cookies_json),
+        )
+
         # Inject to GitHub Secrets
         try:
             self.context.secrets.put_secret(candidate.name, secret_name, cookies_json)
             log_secret_injection(self.logger, candidate.name, secret_name)
         except Exception as e:
-            log_event(self.logger, "Secret injection failed", repo=candidate.name, error=str(e))
+            log_event(
+                self.logger,
+                f"Secret injection FAILED for {candidate.name}",
+                repo=candidate.name,
+                platform=platform.name,
+                secret_name=secret_name,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
             raise
 
         # Inject to GitHub Variables (with security warning)
@@ -359,7 +426,15 @@ class Orchestrator:
             self.context.secrets.put_variable(candidate.name, secret_name, cookies_json)
             log_variable_injection_warning(self.logger, candidate.name, secret_name)
         except Exception as e:
-            log_event(self.logger, "Variable injection failed", repo=candidate.name, error=str(e))
+            log_event(
+                self.logger,
+                f"Variable injection FAILED for {candidate.name} (non-fatal)",
+                repo=candidate.name,
+                platform=platform.name,
+                secret_name=secret_name,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
             # Don't raise — variable injection is best-effort
 
     async def _cleanup_repo_platform(
@@ -501,6 +576,11 @@ def build_orchestrator() -> Orchestrator:
 
     orchestrator = Orchestrator(context)
     _log_credential_status(config, orchestrator.logger)
+
+    warnings = _validate_setup(context)
+    for warning in warnings:
+        log_event(orchestrator.logger, warning, severity="WARNING")
+
     return orchestrator
 
 
