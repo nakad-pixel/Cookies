@@ -75,11 +75,11 @@ class TestDynamicPlatformDetector:
         assert names.count("buffer") == 1
         assert "buffer" in names
 
-    def test_infers_login_url(self):
-        """domain example.com -> https://example.com/login"""
+    def test_uses_homepage_as_start_url(self):
+        """domain buffer.com -> https://www.buffer.com/"""
         repo = MagicMock()
         readme = MagicMock()
-        readme.decoded_content = b"Service at https://example.com"
+        readme.decoded_content = b"Service at https://buffer.com"
         repo.get_contents.side_effect = lambda path: {
             "README.md": readme,
         }.get(path, MagicMock())
@@ -88,9 +88,47 @@ class TestDynamicPlatformDetector:
         candidate._repo_obj = repo  # type: ignore[attr-defined]
 
         targets = DynamicPlatformDetector.detect_from_repo(candidate)
-        example = [t for t in targets if t.name == "example"]
+        example = [t for t in targets if t.name == "buffer"]
         assert len(example) == 1
-        assert example[0].login_url == "https://example.com/login"
+        assert example[0].login_url == "https://www.buffer.com/"
+
+    def test_no_www_when_already_present(self):
+        """domain www.github.com -> https://www.github.com/"""
+        assert DynamicPlatformDetector._infer_start_url("www.github.com") == "https://www.github.com/"
+
+    def test_filters_placeholder_urls(self):
+        """your-worker-url.workers.dev is filtered out."""
+        repo = MagicMock()
+        readme = MagicMock()
+        readme.decoded_content = b"Deploy to https://your-worker-url.workers.dev/login"
+        repo.get_contents.side_effect = lambda path: {
+            "README.md": readme,
+        }.get(path, MagicMock())
+
+        candidate = RepoCandidate(name="test/placeholder", url="https://github.com/test/placeholder", confidence=0.9)
+        candidate._repo_obj = repo  # type: ignore[attr-defined]
+
+        targets = DynamicPlatformDetector.detect_from_repo(candidate)
+        names = [t.name for t in targets]
+        assert "workers" not in names
+        assert len(targets) == 0
+
+    def test_filters_localhost(self):
+        """localhost:3000 is filtered out."""
+        repo = MagicMock()
+        readme = MagicMock()
+        readme.decoded_content = b"Run locally at https://localhost:3000"
+        repo.get_contents.side_effect = lambda path: {
+            "README.md": readme,
+        }.get(path, MagicMock())
+
+        candidate = RepoCandidate(name="test/localhost", url="https://github.com/test/localhost", confidence=0.9)
+        candidate._repo_obj = repo  # type: ignore[attr-defined]
+
+        targets = DynamicPlatformDetector.detect_from_repo(candidate)
+        names = [t.name for t in targets]
+        assert "localhost" not in names
+        assert len(targets) == 0
 
     def test_confidence_scoring(self):
         """README source higher confidence than source file."""

@@ -82,6 +82,17 @@ class DynamicPlatformDetector:
     URL_PATTERN = re.compile(r"https?://[^/\s\"'`]+", re.IGNORECASE)
     TLD_PATTERN = re.compile(r"\.[a-z]{2,}$", re.IGNORECASE)
 
+    PLACEHOLDER_PATTERNS: List[re.Pattern] = [
+        re.compile(
+            r"your-.*-url|example\.(com|org)|localhost|127\.0\.0\.1|0\.0\.0\.0|.*\.local$|.*\.test$|my-.*-domain", re.I
+        ),
+    ]
+
+    @classmethod
+    def _is_placeholder_domain(cls, domain: str) -> bool:
+        """Check if a domain is a placeholder/example domain."""
+        return any(p.search(domain) for p in cls.PLACEHOLDER_PATTERNS)
+
     @classmethod
     def _extract_urls_from_text(cls, text: str) -> List[str]:
         """Extract all URLs from a text block."""
@@ -101,6 +112,10 @@ class DynamicPlatformDetector:
             return False
         except ValueError:
             pass
+
+        # Not placeholder domain
+        if cls._is_placeholder_domain(domain):
+            return False
 
         # Not in blocklist
         if domain in cls.BLOCKLIST:
@@ -137,15 +152,11 @@ class DynamicPlatformDetector:
         return parts[0]
 
     @classmethod
-    def _infer_login_urls(cls, domain: str) -> List[str]:
-        """Return candidate login URLs for a domain."""
-        return [
-            f"https://{domain}/login",
-            f"https://{domain}/signin",
-            f"https://{domain}/auth/login",
-            f"https://accounts.{domain}/login",
-            f"https://auth.{domain}/login",
-        ]
+    def _infer_start_url(cls, domain: str) -> str:
+        """Return the platform homepage as starting URL, not a guessed login URL."""
+        if not domain.startswith("www."):
+            return f"https://www.{domain}/"
+        return f"https://{domain}/"
 
     @classmethod
     def _domain_from_url(cls, url: str) -> str:
@@ -221,11 +232,11 @@ class DynamicPlatformDetector:
         targets: List[TargetPlatform] = []
         for name, conf in domain_confidence.items():
             domain = domain_sources[name]
-            login_urls = cls._infer_login_urls(domain)
+            start_url = cls._infer_start_url(domain)
             targets.append(
                 TargetPlatform(
                     name=name,
-                    login_url=login_urls[0],
+                    login_url=start_url,
                     cookie_domain=domain,
                     confidence=conf,
                 )
