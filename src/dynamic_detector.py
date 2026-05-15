@@ -84,7 +84,7 @@ class DynamicPlatformDetector:
 
     PLACEHOLDER_PATTERNS: List[re.Pattern] = [
         re.compile(
-            r"your-.*-url|example\.(com|org)|localhost|127\.0\.0\.1|0\.0\.0\.0|.*\.local$|.*\.test$|my-.*-domain", re.I
+            r"your-.*-url|example\.(com|org)|localhost|127\.0\.0\.1|0\.0\.0\.0|.*\.local$|.*\.test$|my-.*-domain|.*\.workers\.dev$", re.I
         ),
     ]
 

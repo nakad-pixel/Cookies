@@ -32,6 +32,15 @@ class GitHubActionsManager:
         self._cache[repo] = key
         return key
 
+    def validate_token_permissions(self, repo: str) -> bool:
+        """Check if the token can read and write secrets to a repo."""
+        try:
+            # Try to get the public key (required for secret creation)
+            self.get_public_key(repo)
+            return True
+        except Exception:
+            return False
+
     def encrypt_secret(self, public_key: PublicKey, value: str) -> str:
         key = public.PublicKey(base64.b64decode(public_key.key))
         sealed_box = public.SealedBox(key)
